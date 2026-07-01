@@ -8,6 +8,7 @@ find_package(PkgConfig REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+find_package(OpenVINO CONFIG REQUIRED)
 
 pkg_check_modules(FFMPEG REQUIRED
     libavformat
@@ -16,10 +17,6 @@ pkg_check_modules(FFMPEG REQUIRED
     libswscale
     libswresample
 )
-
-# OpenVINO is intentionally not linked yet — Phase 1 inference classes are stubs (see
-# inference/primary_detector.* etc.). Wiring real models is a later, separate step that only
-# touches those classes' .cpp files, not this build file's overall shape.
 
 set(ANALYTICS_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/analytics.proto)
 
@@ -98,6 +95,7 @@ target_link_libraries(analytics-worker
     gRPC::grpc
     gRPC::grpc++
     spdlog::spdlog
+    openvino::runtime
 )
 
 target_compile_definitions(analytics-worker PRIVATE _CRT_SECURE_NO_WARNINGS)
