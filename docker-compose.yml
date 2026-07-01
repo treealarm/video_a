@@ -1,0 +1,38 @@
+# video_a is a secondary/optional component meant to run alongside an already-running vms_rec
+# (or Square) stack — the shared network is expected to already exist by the time this compose
+# file starts, hence `external: true` (unlike vms_rec's own compose, which creates it if absent).
+networks:
+  default:
+    name: common_app_network
+    external: true
+
+services:
+  analytics-worker:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./models:/models:ro
+      - ./data/crops:/data/crops
+
+  analytics-worker-dapr:
+    image: "daprio/daprd:latest"
+    command:
+      - "./daprd"
+      - "-app-id"
+      - "analytics-worker"
+      - "-app-port"
+      - "${ANALYTICS_GRPC_PORT:-50060}"
+      - "-app-protocol"
+      - "grpc"
+      - "-dapr-http-port"
+      - "3500"
+      - "-dapr-grpc-port"
+      - "50001"
+      - "-components-path"
+      - "/components"
+    volumes:
+      - "./init_files/dapr_components:/components"
+    network_mode: "service:analytics-worker"
+    depends_on:
+      - analytics-worker

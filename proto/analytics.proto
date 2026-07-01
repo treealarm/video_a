@@ -1,0 +1,71 @@
+// Canonical source of the analytics contract. Consumed by vms_rec as a vendored copy at
+// web_vms/VmsAnalytics/proto/analytics.proto — keep both in sync manually when this changes.
+//
+// video_a is a generic, product-agnostic RTSP-analytics engine: it knows nothing about camera
+// models, VmsCfg, or Dapr pub/sub. It exposes a small imperative control surface (StartWatch /
+// StopWatch) plus a single detection stream; the caller (VmsAnalytics in vms_rec) is the only
+// side that maps watch_id back to its own domain concepts.
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package analytics;
+
+service AnalyticsService {
+  rpc StartWatch(WatchRequest) returns (WatchResponse);
+  rpc StopWatch(StopWatchRequest) returns (OperationStatus);
+  rpc StreamDetections(StreamDetectionsRequest) returns (stream DetectionEvent);
+}
+
+enum DetectionKind {
+  DETECTION_KIND_UNSPECIFIED = 0;
+  PERSON = 1;
+  FACE = 2;
+  VEHICLE = 3;
+  LICENSE_PLATE = 4;
+}
+
+message BoundingBox {
+  float x = 1;
+  float y = 2;
+  float width = 3;
+  float height = 4;
+}
+
+message WatchRequest {
+  string watch_id = 1;
+  string rtsp_url = 2;
+  optional string cred_user = 3;
+  optional string cred_pass = 4;
+  repeated DetectionKind classes = 5;
+  float min_confidence = 6;
+  uint32 sample_fps = 7;
+}
+
+message WatchResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message StopWatchRequest {
+  string watch_id = 1;
+}
+
+message OperationStatus {
+  bool success = 1;
+  string message = 2;
+}
+
+message StreamDetectionsRequest {}
+
+message DetectionEvent {
+  string watch_id = 1;
+  int64 track_id = 2;
+  DetectionKind kind = 3;
+  float confidence = 4;
+  BoundingBox bbox = 5;
+  google.protobuf.Timestamp detected_at = 6;
+  string crop_ref = 7;
+  optional string recognized_text = 8;
+  optional float text_confidence = 9;
+}

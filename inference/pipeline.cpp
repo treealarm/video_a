@@ -1,0 +1,164 @@
+#include "pipeline.h"
+
+#include <algorithm>
+#include <cstring>
+
+#include "primary_detector.h"
+#include "face_detector.h"
+#include "plate_detector.h"
+#include "plate_ocr.h"
+#include "tracker.h"
+#include "../crop_writer.h"
+
+pipeline::pipeline(pipeline_config config, const std::string& model_dir, std::shared_ptr<crop_writer> crops)
+  : m_config(std::move(config))
+  , m_crops(std::move(crops))
+  , m_primary(std::make_unique<primary_detector>(model_dir + "/primary_detector"))
+  , m_face(std::make_unique<face_detector>(model_dir + "/face_detector"))
+  , m_plate(std::make_unique<plate_detector>(model_dir + "/plate_detector"))
+  , m_ocr(std::make_unique<plate_ocr>(model_dir + "/plate_ocr"))
+  , m_tracker(std::make_unique<tracker>())
+{
+}
+
+pipeline::~pipeline() = default;
+
+bool pipeline::wants(detection_kind kind) const
+{
+  return std::find(m_config.classes.begin(), m_config.classes.end(), kind) != m_config.classes.end();
+}
+
+decoded_frame pipeline::crop_region(const decoded_frame& frame, const bbox_t& bbox)
+{
+  int x = static_cast<int>(bbox.x * static_cast<float>(frame.width));
+  int y = static_cast<int>(bbox.y * static_cast<float>(frame.height));
+  int w = static_cast<int>(bbox.width * static_cast<float>(frame.width));
+  int h = static_cast<int>(bbox.height * static_cast<float>(frame.height));
+
+  x = std::clamp(x, 0, std::max(0, frame.width - 1));
+  y = std::clamp(y, 0, std::max(0, frame.height - 1));
+  w = std::clamp(w, 1, frame.width - x);
+  h = std::clamp(h, 1, frame.height - y);
+
+  decoded_frame out;
+  out.width = w;
+  out.height = h;
+  out.captured_at = frame.captured_at;
+  out.bgr.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 3);
+
+  for (int row = 0; row < h; ++row)
+  {
+    const uint8_t* src = frame.bgr.data() + (static_cast<size_t>(y + row) * static_cast<size_t>(frame.width) + static_cast<size_t>(x)) * 3;
+    uint8_t* dst = out.bgr.data() + static_cast<size_t>(row) * static_cast<size_t>(w) * 3;
+    std::memcpy(dst, src, static_cast<size_t>(w) * 3);
+  }
+
+  return out;
+}
+
+void pipeline::process_frame(const decoded_frame& frame, const std::function<void(const final_detection&)>& emit)
+{
+  auto raw = m_primary->infer(frame);
+
+  std::vector<raw_detection> filtered;
+  filtered.reserve(raw.size());
+  for (auto& d : raw)
+  {
+    if (d.confidence >= m_config.min_confidence)
+      filtered.push_back(d);
+  }
+
+  const auto tracked = m_tracker->update(filtered);
+
+  for (const auto& t : tracked)
+  {
+    if (t.kind == detection_kind::person)
+    {
+      if (wants(detection_kind::person))
+      {
+        emit(final_detection{
+          .track_id = t.track_id,
+          .kind = detection_kind::person,
+          .confidence = t.confidence,
+          .bbox = t.bbox,
+          .detected_at = frame.captured_at,
+          .crop_ref = {},
+          .recognized_text = std::nullopt,
+          .text_confidence = std::nullopt,
+        });
+      }
+
+      if (wants(detection_kind::face))
+      {
+        const auto person_crop = crop_region(frame, t.bbox);
+        for (const auto& f : m_face->infer(person_crop))
+        {
+          if (f.confidence < m_config.min_confidence) continue;
+          final_detection out{
+            .track_id = t.track_id,
+            .kind = detection_kind::face,
+            .confidence = f.confidence,
+            .bbox = f.bbox,
+            .detected_at = frame.captured_at,
+            .crop_ref = {},
+            .recognized_text = std::nullopt,
+            .text_confidence = std::nullopt,
+          };
+          if (m_crops)
+          {
+            const auto face_crop = crop_region(person_crop, f.bbox);
+            out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, face_crop);
+          }
+          emit(out);
+        }
+      }
+    }
+    else if (t.kind == detection_kind::vehicle)
+    {
+      if (wants(detection_kind::vehicle))
+      {
+        emit(final_detection{
+          .track_id = t.track_id,
+          .kind = detection_kind::vehicle,
+          .confidence = t.confidence,
+          .bbox = t.bbox,
+          .detected_at = frame.captured_at,
+          .crop_ref = {},
+          .recognized_text = std::nullopt,
+          .text_confidence = std::nullopt,
+        });
+      }
+
+      if (wants(detection_kind::license_plate))
+      {
+        const auto vehicle_crop = crop_region(frame, t.bbox);
+        for (const auto& p : m_plate->infer(vehicle_crop))
+        {
+          if (p.confidence < m_config.min_confidence) continue;
+
+          const auto plate_crop = crop_region(vehicle_crop, p.bbox);
+          const auto ocr = m_ocr->infer(plate_crop);
+
+          final_detection out{
+            .track_id = t.track_id,
+            .kind = detection_kind::license_plate,
+            .confidence = p.confidence,
+            .bbox = p.bbox,
+            .detected_at = frame.captured_at,
+            .crop_ref = {},
+            .recognized_text = std::nullopt,
+            .text_confidence = std::nullopt,
+          };
+          if (ocr)
+          {
+            out.recognized_text = ocr->text;
+            out.text_confidence = ocr->confidence;
+          }
+          if (m_crops)
+            out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, plate_crop);
+          emit(out);
+        }
+      }
+    }
+  }
+}
