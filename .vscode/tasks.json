@@ -1,0 +1,49 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cmake:configure:analytics-worker",
+            "type": "process",
+            "command": "cmake",
+            "args": [
+                "--preset",
+                "linux-default"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "cmake:build:analytics-worker",
+            "detail": "-j1: the static OpenVINO link is very memory-heavy (~3.5GB binary); parallel jobs risk an OOM-truncated (silently empty) output on memory-constrained machines.",
+            "type": "process",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/build",
+                "--target",
+                "analytics-worker",
+                "-j1"
+            ],
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "kill stale: analytics-worker (F5)",
+            "detail": "Frees the gRPC port from a previous debug session that wasn't stopped cleanly.",
+            "type": "shell",
+            "command": "pkill -f 'build/analytics-worker' || true",
+            "problemMatcher": []
+        },
+        {
+            "label": "prepare:analytics-worker",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "kill stale: analytics-worker (F5)",
+                "cmake:configure:analytics-worker",
+                "cmake:build:analytics-worker"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}

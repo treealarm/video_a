@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Analytics Worker (C++)",
+            "type": "cppdbg",
+            "request": "launch",
+            "preLaunchTask": "prepare:analytics-worker",
+            "program": "${workspaceFolder}/build/analytics-worker",
+            "args": [],
+            "environment": [
+                { "name": "DEBUGINFOD_URLS", "value": "" },
+                { "name": "ANALYTICS_GRPC_PORT", "value": "50060" },
+                { "name": "ANALYTICS_MODEL_PATH", "value": "${workspaceFolder}/models" },
+                { "name": "ANALYTICS_DEVICE", "value": "CPU" },
+                { "name": "ANALYTICS_CROP_STORAGE_PATH", "value": "${workspaceFolder}/data/crops" },
+                { "name": "ANALYTICS_STUB_SYNTHETIC_DETECTIONS", "value": "false" }
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "MIMode": "gdb",
+            "externalConsole": false,
+            "setupCommands": [
+                { "text": "-enable-pretty-printing" },
+                { "text": "set debuginfod enabled off", "ignoreFailures": true },
+                { "text": "set debuginfod urls \"\"", "ignoreFailures": true },
+                { "text": "set debuginfod verbose 0", "ignoreFailures": true }
+            ]
+        }
+    ]
+}
