@@ -6,6 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "preLaunchTask": "prepare:analytics-worker",
+            "postDebugTask": "dapr:analytics-worker:stop",
             "program": "${workspaceFolder}/build/analytics-worker",
             "args": [],
             "environment": [

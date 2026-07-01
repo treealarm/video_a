@@ -36,12 +36,42 @@
             "problemMatcher": []
         },
         {
+            "label": "dapr:analytics-worker:start",
+            "detail": "Plain gRPC service invocation sidecar — no components (no pub/sub, no state store), no placement (not an actor). Lets vms_rec's VmsAnalytics (DAPR_ANALYTICS_WORKER_APP_ID=analytics-worker) discover this over local mDNS, same as vms_rec's own local dapr sidecars discover each other.",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "pid_dir=/tmp/video_a-dapr; name=analytics-worker; pid_file=\"$pid_dir/$name.pid\"; log_file=\"$pid_dir/$name.log\"; daprd_bin=\"$(command -v daprd || true)\"; if [ -z \"$daprd_bin\" ] && [ -x \"$HOME/.dapr/bin/daprd\" ]; then daprd_bin=\"$HOME/.dapr/bin/daprd\"; fi; mkdir -p \"$pid_dir\"; if [ -f \"$pid_file\" ] && kill -0 \"$(cat \"$pid_file\")\" 2>/dev/null; then exit 0; fi; rm -f \"$pid_file\"; if [ -z \"$daprd_bin\" ]; then echo \"daprd not found in PATH or \\$HOME/.dapr/bin\" > \"$log_file\"; exit 1; fi; nohup \"$daprd_bin\" -app-id analytics-worker -app-port 50060 -app-protocol grpc -dapr-http-port 3611 -dapr-grpc-port 51012 -metrics-port 9201 -components-path ${workspaceFolder}/init_files/dapr_components -dapr-internal-grpc-port 49022 > \"$log_file\" 2>&1 & echo $! > \"$pid_file\"; sleep 2; if ! kill -0 \"$(cat \"$pid_file\")\" 2>/dev/null; then echo \"daprd for $name failed to stay running. Log:\"; sed -n '1,120p' \"$log_file\"; exit 1; fi"
+            ],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "dapr:analytics-worker:stop",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-lc",
+                "if [ -f /tmp/video_a-dapr/analytics-worker.pid ]; then kill \"$(cat /tmp/video_a-dapr/analytics-worker.pid)\" 2>/dev/null || true; rm -f /tmp/video_a-dapr/analytics-worker.pid; fi"
+            ],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "prepare:analytics-worker",
             "dependsOrder": "sequence",
             "dependsOn": [
                 "kill stale: analytics-worker (F5)",
                 "cmake:configure:analytics-worker",
-                "cmake:build:analytics-worker"
+                "cmake:build:analytics-worker",
+                "dapr:analytics-worker:start"
             ],
             "problemMatcher": []
         }
