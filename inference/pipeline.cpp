@@ -9,6 +9,21 @@
 #include "plate_ocr.h"
 #include "tracker.h"
 #include "../crop_writer.h"
+#include "../logging.h"
+
+namespace {
+const char* kind_name(detection_kind kind)
+{
+  switch (kind)
+  {
+    case detection_kind::person: return "person";
+    case detection_kind::face: return "face";
+    case detection_kind::vehicle: return "vehicle";
+    case detection_kind::license_plate: return "license_plate";
+  }
+  return "unknown";
+}
+}
 
 pipeline::pipeline(pipeline_config config, const std::string& model_dir, std::shared_ptr<crop_writer> crops)
   : m_config(std::move(config))
@@ -56,8 +71,20 @@ decoded_frame pipeline::crop_region(const decoded_frame& frame, const bbox_t& bb
   return out;
 }
 
-void pipeline::process_frame(const decoded_frame& frame, const std::function<void(const final_detection&)>& emit)
+void pipeline::process_frame(const decoded_frame& frame, const std::function<void(const final_detection&)>& emit_out)
 {
+  const auto& watch_id = m_config.watch_id;
+  auto emit = [&](const final_detection& det)
+  {
+    if (det.recognized_text)
+      log()->info("pipeline: watch={} track={} kind={} confidence={:.2f} plate=\"{}\"",
+        watch_id, det.track_id, kind_name(det.kind), det.confidence, *det.recognized_text);
+    else
+      log()->info("pipeline: watch={} track={} kind={} confidence={:.2f}",
+        watch_id, det.track_id, kind_name(det.kind), det.confidence);
+    emit_out(det);
+  };
+
   auto raw = m_primary->infer(frame);
 
   std::vector<raw_detection> filtered;

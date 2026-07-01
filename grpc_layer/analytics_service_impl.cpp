@@ -2,6 +2,8 @@
 
 #include <chrono>
 
+#include "../logging.h"
+
 namespace {
 detection_kind from_proto(analytics::DetectionKind kind)
 {
@@ -47,7 +49,7 @@ analytics_service_impl::analytics_service_impl(std::shared_ptr<watch_manager> wa
 }
 
 grpc::Status analytics_service_impl::StartWatch(
-  grpc::ServerContext* /*context*/,
+  grpc::ServerContext* context,
   const analytics::WatchRequest* request,
   analytics::WatchResponse* response)
 {
@@ -61,17 +63,24 @@ grpc::Status analytics_service_impl::StartWatch(
   for (int i = 0; i < request->classes_size(); ++i)
     params.classes.push_back(from_proto(request->classes(i)));
 
+  log()->info("StartWatch [peer={}] watch={} rtsp={} classes={} min_confidence={:.2f} sample_fps={} has_cred={}",
+    context->peer(), params.watch_id, params.rtsp_url, request->classes_size(),
+    params.min_confidence, params.sample_fps, request->has_cred_user());
+
   const bool ok = m_watches->start_watch(params);
   response->set_success(ok);
   response->set_message(ok ? "ok" : "failed to open rtsp source");
+  if (!ok)
+    log()->error("StartWatch failed: watch={} rtsp={}", params.watch_id, params.rtsp_url);
   return grpc::Status::OK;
 }
 
 grpc::Status analytics_service_impl::StopWatch(
-  grpc::ServerContext* /*context*/,
+  grpc::ServerContext* context,
   const analytics::StopWatchRequest* request,
   analytics::OperationStatus* response)
 {
+  log()->info("StopWatch [peer={}] watch={}", context->peer(), request->watch_id());
   m_watches->stop_watch(request->watch_id());
   response->set_success(true);
   return grpc::Status::OK;
@@ -82,6 +91,9 @@ grpc::Status analytics_service_impl::StreamDetections(
   const analytics::StreamDetectionsRequest* /*request*/,
   grpc::ServerWriter<analytics::DetectionEvent>* writer)
 {
+  log()->info("StreamDetections: client connected [peer={}]", context->peer());
+  size_t sent = 0;
+
   while (!context->IsCancelled())
   {
     auto item = m_queue->pop_wait(std::chrono::milliseconds(500));
@@ -105,7 +117,12 @@ grpc::Status analytics_service_impl::StreamDetections(
     if (item->detection.text_confidence) evt.set_text_confidence(*item->detection.text_confidence);
 
     if (!writer->Write(evt))
-      break; // client disconnected
+    {
+      log()->warn("StreamDetections: write failed, client disconnected [peer={}] after {} events", context->peer(), sent);
+      return grpc::Status::OK;
+    }
+    ++sent;
   }
+  log()->info("StreamDetections: client cancelled [peer={}] after {} events", context->peer(), sent);
   return grpc::Status::OK;
 }

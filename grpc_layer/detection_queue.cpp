@@ -1,10 +1,15 @@
 #include "detection_queue.h"
 
+#include "../logging.h"
+
 void detection_queue::push(queued_detection item)
 {
   std::scoped_lock lock(m_mutex);
   if (m_queue.size() >= kMaxQueueSize)
+  {
+    log()->warn("detection_queue: full ({} items), dropping oldest — no StreamDetections consumer reading fast enough", kMaxQueueSize);
     m_queue.pop_front(); // drop-oldest
+  }
 
   m_queue.push_back(std::move(item));
   m_cv.notify_one();
