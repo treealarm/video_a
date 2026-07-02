@@ -60,12 +60,13 @@ grpc::Status analytics_service_impl::StartWatch(
   params.cred_pass = request->has_cred_pass() ? request->cred_pass() : std::string();
   params.min_confidence = request->min_confidence();
   params.sample_fps = request->sample_fps();
+  params.attach_debug_crops = request->attach_debug_crops();
   for (int i = 0; i < request->classes_size(); ++i)
     params.classes.push_back(from_proto(request->classes(i)));
 
-  log()->info("StartWatch [peer={}] watch={} rtsp={} classes={} min_confidence={:.2f} sample_fps={} has_cred={}",
+  log()->info("StartWatch [peer={}] watch={} rtsp={} classes={} min_confidence={:.2f} sample_fps={} has_cred={} debug_crops={}",
     context->peer(), params.watch_id, params.rtsp_url, request->classes_size(),
-    params.min_confidence, params.sample_fps, request->has_cred_user());
+    params.min_confidence, params.sample_fps, request->has_cred_user(), params.attach_debug_crops);
 
   const bool ok = m_watches->start_watch(params);
   response->set_success(ok);
@@ -115,6 +116,8 @@ grpc::Status analytics_service_impl::StreamDetections(
     evt.set_crop_ref(item->detection.crop_ref);
     if (item->detection.recognized_text) evt.set_recognized_text(*item->detection.recognized_text);
     if (item->detection.text_confidence) evt.set_text_confidence(*item->detection.text_confidence);
+    if (!item->detection.debug_jpeg.empty())
+      evt.set_debug_crop_jpeg(item->detection.debug_jpeg.data(), item->detection.debug_jpeg.size());
 
     if (!writer->Write(evt))
     {

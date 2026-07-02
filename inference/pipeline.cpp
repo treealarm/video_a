@@ -103,7 +103,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
     {
       if (wants(detection_kind::person))
       {
-        emit(final_detection{
+        final_detection out{
           .track_id = t.track_id,
           .kind = detection_kind::person,
           .confidence = t.confidence,
@@ -112,7 +112,11 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .crop_ref = {},
           .recognized_text = std::nullopt,
           .text_confidence = std::nullopt,
-        });
+          .debug_jpeg = {},
+        };
+        if (m_config.attach_debug_crops)
+          out.debug_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
+        emit(out);
       }
 
       if (wants(detection_kind::face))
@@ -130,11 +134,15 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .crop_ref = {},
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,
+            .debug_jpeg = {},
           };
-          if (m_crops)
+          if (m_crops || m_config.attach_debug_crops)
           {
             const auto face_crop = crop_region(person_crop, f.bbox);
-            out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, face_crop);
+            if (m_crops)
+              out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, face_crop);
+            if (m_config.attach_debug_crops)
+              out.debug_jpeg = encode_crop_jpeg(face_crop);
           }
           emit(out);
         }
@@ -144,7 +152,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
     {
       if (wants(detection_kind::vehicle))
       {
-        emit(final_detection{
+        final_detection out{
           .track_id = t.track_id,
           .kind = detection_kind::vehicle,
           .confidence = t.confidence,
@@ -153,7 +161,11 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .crop_ref = {},
           .recognized_text = std::nullopt,
           .text_confidence = std::nullopt,
-        });
+          .debug_jpeg = {},
+        };
+        if (m_config.attach_debug_crops)
+          out.debug_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
+        emit(out);
       }
 
       if (wants(detection_kind::license_plate))
@@ -175,6 +187,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .crop_ref = {},
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,
+            .debug_jpeg = {},
           };
           if (ocr)
           {
@@ -183,6 +196,8 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           }
           if (m_crops)
             out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, plate_crop);
+          if (m_config.attach_debug_crops)
+            out.debug_jpeg = encode_crop_jpeg(plate_crop);
           emit(out);
         }
       }

@@ -33,6 +33,7 @@ bool watch_manager::start_watch(const watch_params& params)
   cfg.watch_id = params.watch_id;
   cfg.classes = params.classes;
   cfg.min_confidence = params.min_confidence;
+  cfg.attach_debug_crops = params.attach_debug_crops;
 
   watch_entry entry;
   entry.pipeline_instance = std::make_unique<pipeline>(cfg, m_model_dir, m_crops);

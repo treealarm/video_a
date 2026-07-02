@@ -31,9 +31,7 @@ struct avpacket_deleter_local {
 };
 }
 
-crop_writer::crop_writer(std::string base_path) : m_base_path(std::move(base_path)) {}
-
-std::string crop_writer::write_crop(const std::string& watch_id, int64_t track_id, const decoded_frame& crop) const
+std::vector<uint8_t> encode_crop_jpeg(const decoded_frame& crop)
 {
   if (crop.width <= 0 || crop.height <= 0 || crop.bgr.empty())
     return {};
@@ -83,6 +81,17 @@ std::string crop_writer::write_crop(const std::string& watch_id, int64_t track_i
 
   if (avcodec_receive_packet(enc_ctx.get(), pkt.get()) < 0) return {};
 
+  return std::vector<uint8_t>(pkt->data, pkt->data + pkt->size);
+}
+
+crop_writer::crop_writer(std::string base_path) : m_base_path(std::move(base_path)) {}
+
+std::string crop_writer::write_crop(const std::string& watch_id, int64_t track_id, const decoded_frame& crop) const
+{
+  const auto jpeg = encode_crop_jpeg(crop);
+  if (jpeg.empty())
+    return {};
+
   const auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm_buf{};
   gmtime_r(&now_t, &tm_buf);
@@ -113,7 +122,7 @@ std::string crop_writer::write_crop(const std::string& watch_id, int64_t track_i
     log()->warn("crop_writer: failed to open '{}' for writing", full_path.string());
     return {};
   }
-  out.write(reinterpret_cast<const char*>(pkt->data), pkt->size);
+  out.write(reinterpret_cast<const char*>(jpeg.data()), static_cast<std::streamsize>(jpeg.size()));
 
   return relative_path;
 }

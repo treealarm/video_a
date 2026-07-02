@@ -25,6 +25,7 @@ struct watch_params {
   // Informational only for Phase 1 — the effective sample rate is bound by the stream's
   // keyframe interval (see frame_sampler), not actively throttled to this value.
   uint32_t sample_fps = 1;
+  bool attach_debug_crops = false;
 };
 
 // Owns the map watch_id -> {rtsp_reader, frame_sampler, pipeline}, thread-safe. Driven entirely

@@ -19,6 +19,7 @@ struct pipeline_config {
   std::string watch_id;
   std::vector<detection_kind> classes;
   float min_confidence = 0.5f;
+  bool attach_debug_crops = false;
 };
 
 // Orchestrates the 4 inference stages on every sampled (keyframe-decoded) frame — see project

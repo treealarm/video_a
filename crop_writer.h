@@ -2,8 +2,13 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct decoded_frame;
+
+// Encodes a BGR24 frame to JPEG in memory. Returns an empty vector on failure — encoding is
+// always best-effort and must never abort the detection itself.
+std::vector<uint8_t> encode_crop_jpeg(const decoded_frame& crop);
 
 // Writes JPEG crops under ANALYTICS_CROP_STORAGE_PATH — video_a's own storage, not shared with
 // vms_rec (see project plan A.6). crop_ref returned here is opaque to the caller: VmsAnalytics

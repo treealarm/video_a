@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 enum class detection_kind {
   person,
@@ -43,4 +44,5 @@ struct final_detection {
   std::string crop_ref;  // opaque, empty if no crop was written
   std::optional<std::string> recognized_text;
   std::optional<float> text_confidence;
+  std::vector<uint8_t> debug_jpeg;  // filled only when the watch has attach_debug_crops set
 };
