@@ -40,8 +40,9 @@ message WatchRequest {
   repeated DetectionKind classes = 5;
   float min_confidence = 6;
   uint32 sample_fps = 7;
-  // Debug aid: when true, every DetectionEvent carries a JPEG of the detected object's
-  // bbox region in debug_crop_jpeg. Off by default — costs one JPEG encode per detection.
+  // FACE / LICENSE_PLATE events always carry crop_jpeg (they are the caller's persistent
+  // artifacts). This debug flag additionally attaches crops to PERSON / VEHICLE events —
+  // off by default, costs one JPEG encode per detection.
   bool attach_debug_crops = 8;
 }
 
@@ -68,9 +69,10 @@ message DetectionEvent {
   float confidence = 4;
   BoundingBox bbox = 5;
   google.protobuf.Timestamp detected_at = 6;
-  string crop_ref = 7;
   optional string recognized_text = 8;
   optional float text_confidence = 9;
-  // Filled only when WatchRequest.attach_debug_crops was set; empty otherwise.
-  bytes debug_crop_jpeg = 10;
+  // JPEG of the detected object's bbox region. Always set for FACE / LICENSE_PLATE; set for
+  // PERSON / VEHICLE only when WatchRequest.attach_debug_crops. The worker keeps no copy —
+  // persisting this is entirely the caller's concern (video_a is stateless).
+  bytes crop_jpeg = 10;
 }

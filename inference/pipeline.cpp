@@ -8,7 +8,7 @@
 #include "plate_detector.h"
 #include "plate_ocr.h"
 #include "tracker.h"
-#include "../crop_writer.h"
+#include "../crop_encoder.h"
 #include "../logging.h"
 
 namespace {
@@ -25,9 +25,8 @@ const char* kind_name(detection_kind kind)
 }
 }
 
-pipeline::pipeline(pipeline_config config, const std::string& model_dir, std::shared_ptr<crop_writer> crops)
+pipeline::pipeline(pipeline_config config, const std::string& model_dir)
   : m_config(std::move(config))
-  , m_crops(std::move(crops))
   , m_primary(std::make_unique<primary_detector>(model_dir + "/primary_detector"))
   , m_face(std::make_unique<face_detector>(model_dir + "/face_detector"))
   , m_plate(std::make_unique<plate_detector>(model_dir + "/plate_detector"))
@@ -109,13 +108,12 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .confidence = t.confidence,
           .bbox = t.bbox,
           .detected_at = frame.captured_at,
-          .crop_ref = {},
           .recognized_text = std::nullopt,
           .text_confidence = std::nullopt,
-          .debug_jpeg = {},
+          .crop_jpeg = {},
         };
         if (m_config.attach_debug_crops)
-          out.debug_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
+          out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
         emit(out);
       }
 
@@ -131,19 +129,11 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .confidence = f.confidence,
             .bbox = f.bbox,
             .detected_at = frame.captured_at,
-            .crop_ref = {},
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,
-            .debug_jpeg = {},
+            // Face crops are the caller's persistent artifact — always attached.
+            .crop_jpeg = encode_crop_jpeg(crop_region(person_crop, f.bbox)),
           };
-          if (m_crops || m_config.attach_debug_crops)
-          {
-            const auto face_crop = crop_region(person_crop, f.bbox);
-            if (m_crops)
-              out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, face_crop);
-            if (m_config.attach_debug_crops)
-              out.debug_jpeg = encode_crop_jpeg(face_crop);
-          }
           emit(out);
         }
       }
@@ -158,13 +148,12 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .confidence = t.confidence,
           .bbox = t.bbox,
           .detected_at = frame.captured_at,
-          .crop_ref = {},
           .recognized_text = std::nullopt,
           .text_confidence = std::nullopt,
-          .debug_jpeg = {},
+          .crop_jpeg = {},
         };
         if (m_config.attach_debug_crops)
-          out.debug_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
+          out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
         emit(out);
       }
 
@@ -184,20 +173,16 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .confidence = p.confidence,
             .bbox = p.bbox,
             .detected_at = frame.captured_at,
-            .crop_ref = {},
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,
-            .debug_jpeg = {},
+            // Plate crops are the caller's persistent artifact — always attached.
+            .crop_jpeg = encode_crop_jpeg(plate_crop),
           };
           if (ocr)
           {
             out.recognized_text = ocr->text;
             out.text_confidence = ocr->confidence;
           }
-          if (m_crops)
-            out.crop_ref = m_crops->write_crop(m_config.watch_id, t.track_id, plate_crop);
-          if (m_config.attach_debug_crops)
-            out.debug_jpeg = encode_crop_jpeg(plate_crop);
           emit(out);
         }
       }

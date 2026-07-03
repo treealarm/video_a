@@ -13,7 +13,6 @@ class face_detector;
 class plate_detector;
 class plate_ocr;
 class tracker;
-class crop_writer;
 
 struct pipeline_config {
   std::string watch_id;
@@ -28,7 +27,7 @@ struct pipeline_config {
 // something the caller needs to configure explicitly.
 class pipeline {
 public:
-  pipeline(pipeline_config config, const std::string& model_dir, std::shared_ptr<crop_writer> crops);
+  pipeline(pipeline_config config, const std::string& model_dir);
   ~pipeline();
 
   void process_frame(const decoded_frame& frame, const std::function<void(const final_detection&)>& emit);
@@ -38,7 +37,6 @@ private:
   static decoded_frame crop_region(const decoded_frame& frame, const bbox_t& bbox);
 
   pipeline_config m_config;
-  std::shared_ptr<crop_writer> m_crops;
 
   std::unique_ptr<primary_detector> m_primary;
   std::unique_ptr<face_detector> m_face;

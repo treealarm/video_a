@@ -25,14 +25,12 @@ mode, `x64-linux` triplet) — see `CMakeLists.txt`.
 Requires these environment variables (see `.env`):
 
 - `ANALYTICS_GRPC_PORT` — gRPC listen port.
-- `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector.xml/.bin`,
+- `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector.xml/.bin` (or `.onnx`),
   `face_detector.xml/.bin`, `plate_detector.xml/.bin`, `plate_ocr.xml/.bin` (OpenVINO IR pairs).
-  **Phase 1: models are not yet wired in** — all four inference classes are stubs (see
-  `inference/*_detector.h`, `inference/plate_ocr.h`) that always return empty results.
-- `ANALYTICS_DEVICE` — reserved for future OpenVINO device selection (`CPU`/`GPU`); validated on
-  startup but unused until real model wiring lands.
-- `ANALYTICS_CROP_STORAGE_PATH` — where JPEG crops (face/plate) are written; own storage, not
-  shared with any consumer.
+  `primary_detector` (person/vehicle, YOLOv8-style) and `face_detector` (OMZ face-detection-0205)
+  are wired in; `plate_detector`/`plate_ocr` are still stubs that return empty results. A missing
+  model file puts that detector into stub mode with a startup warning.
+- `ANALYTICS_DEVICE` — OpenVINO device selection (`CPU`/`GPU`).
 - `ANALYTICS_STUB_SYNTHETIC_DETECTIONS` — optional, dev/test-only. When `true`, periodically emits
   one synthetic `PERSON` detection so the whole pipeline (RTSP → decode → tracker → gRPC stream)
   is exercisable end-to-end without real models.

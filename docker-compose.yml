@@ -13,7 +13,6 @@ services:
       - .env
     volumes:
       - ./models:/models:ro
-      - ./data/crops:/data/crops
 
   analytics-worker-dapr:
     image: "daprio/daprd:latest"

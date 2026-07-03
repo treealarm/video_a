@@ -25,8 +25,8 @@ set(SOURCES
     logging.h
     watch_manager.cpp
     watch_manager.h
-    crop_writer.cpp
-    crop_writer.h
+    crop_encoder.cpp
+    crop_encoder.h
 
     grpc_layer/analytics_service_impl.cpp
     grpc_layer/analytics_service_impl.h

@@ -3,12 +3,10 @@
 #include "reader/rtsp_reader.h"
 #include "inference/frame_sampler.h"
 #include "inference/pipeline.h"
-#include "crop_writer.h"
 #include "logging.h"
 
-watch_manager::watch_manager(std::string model_dir, std::shared_ptr<crop_writer> crops, detection_callback on_detection)
+watch_manager::watch_manager(std::string model_dir, detection_callback on_detection)
   : m_model_dir(std::move(model_dir))
-  , m_crops(std::move(crops))
   , m_on_detection(std::move(on_detection))
 {
 }
@@ -36,7 +34,7 @@ bool watch_manager::start_watch(const watch_params& params)
   cfg.attach_debug_crops = params.attach_debug_crops;
 
   watch_entry entry;
-  entry.pipeline_instance = std::make_unique<pipeline>(cfg, m_model_dir, m_crops);
+  entry.pipeline_instance = std::make_unique<pipeline>(cfg, m_model_dir);
 
   auto* pipeline_ptr = entry.pipeline_instance.get();
   auto on_detection = m_on_detection;

@@ -113,11 +113,10 @@ grpc::Status analytics_service_impl::StreamDetections(
     bbox->set_height(item->detection.bbox.height);
 
     *evt.mutable_detected_at() = to_proto_timestamp(item->detection.detected_at);
-    evt.set_crop_ref(item->detection.crop_ref);
     if (item->detection.recognized_text) evt.set_recognized_text(*item->detection.recognized_text);
     if (item->detection.text_confidence) evt.set_text_confidence(*item->detection.text_confidence);
-    if (!item->detection.debug_jpeg.empty())
-      evt.set_debug_crop_jpeg(item->detection.debug_jpeg.data(), item->detection.debug_jpeg.size());
+    if (!item->detection.crop_jpeg.empty())
+      evt.set_crop_jpeg(item->detection.crop_jpeg.data(), item->detection.crop_jpeg.size());
 
     if (!writer->Write(evt))
     {

@@ -41,8 +41,8 @@ struct final_detection {
   float confidence = 0.0f;
   bbox_t bbox;
   std::chrono::system_clock::time_point detected_at;
-  std::string crop_ref;  // opaque, empty if no crop was written
   std::optional<std::string> recognized_text;
   std::optional<float> text_confidence;
-  std::vector<uint8_t> debug_jpeg;  // filled only when the watch has attach_debug_crops set
+  // Always set for face/license_plate; for person/vehicle only under attach_debug_crops.
+  std::vector<uint8_t> crop_jpeg;
 };

@@ -1,20 +1,13 @@
-#include "crop_writer.h"
+#include "crop_encoder.h"
 #include "inference/frame_sampler.h"
 #include "logging.h"
 
-#include <chrono>
-#include <cstdio>
-#include <ctime>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 }
-
-namespace fs = std::filesystem;
 
 namespace {
 struct avcodec_context_deleter_local {
@@ -39,7 +32,7 @@ std::vector<uint8_t> encode_crop_jpeg(const decoded_frame& crop)
   const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
   if (!codec)
   {
-    log()->warn("crop_writer: no MJPEG encoder available");
+    log()->warn("crop_encoder: no MJPEG encoder available");
     return {};
   }
 
@@ -53,7 +46,7 @@ std::vector<uint8_t> encode_crop_jpeg(const decoded_frame& crop)
 
   if (avcodec_open2(enc_ctx.get(), codec, nullptr) < 0)
   {
-    log()->warn("crop_writer: failed to open MJPEG encoder");
+    log()->warn("crop_encoder: failed to open MJPEG encoder");
     return {};
   }
 
@@ -82,47 +75,4 @@ std::vector<uint8_t> encode_crop_jpeg(const decoded_frame& crop)
   if (avcodec_receive_packet(enc_ctx.get(), pkt.get()) < 0) return {};
 
   return std::vector<uint8_t>(pkt->data, pkt->data + pkt->size);
-}
-
-crop_writer::crop_writer(std::string base_path) : m_base_path(std::move(base_path)) {}
-
-std::string crop_writer::write_crop(const std::string& watch_id, int64_t track_id, const decoded_frame& crop) const
-{
-  const auto jpeg = encode_crop_jpeg(crop);
-  if (jpeg.empty())
-    return {};
-
-  const auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-  std::tm tm_buf{};
-  gmtime_r(&now_t, &tm_buf);
-
-  char date_dir[32];
-  std::strftime(date_dir, sizeof(date_dir), "%Y/%m/%d/%H", &tm_buf);
-  char timestamp[32];
-  std::strftime(timestamp, sizeof(timestamp), "%Y%m%dT%H%M%S", &tm_buf);
-
-  char rel_buf[512];
-  std::snprintf(rel_buf, sizeof(rel_buf), "%s/%s/%lld_%s.jpg",
-    watch_id.c_str(), date_dir, static_cast<long long>(track_id), timestamp);
-  const std::string relative_path = rel_buf;
-
-  const fs::path full_path = fs::path(m_base_path) / relative_path;
-
-  std::error_code ec;
-  fs::create_directories(full_path.parent_path(), ec);
-  if (ec)
-  {
-    log()->warn("crop_writer: failed to create directory '{}': {}", full_path.parent_path().string(), ec.message());
-    return {};
-  }
-
-  std::ofstream out(full_path, std::ios::binary);
-  if (!out)
-  {
-    log()->warn("crop_writer: failed to open '{}' for writing", full_path.string());
-    return {};
-  }
-  out.write(reinterpret_cast<const char*>(jpeg.data()), static_cast<std::streamsize>(jpeg.size()));
-
-  return relative_path;
 }

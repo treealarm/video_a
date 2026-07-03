@@ -4,7 +4,6 @@
 
 #include <grpcpp/grpcpp.h>
 
-#include "crop_writer.h"
 #include "grpc_layer/analytics_service_impl.h"
 #include "grpc_layer/detection_queue.h"
 #include "logging.h"
@@ -27,17 +26,14 @@ int main()
 {
   const auto grpc_port = require_env("ANALYTICS_GRPC_PORT");
   const auto model_dir = require_env("ANALYTICS_MODEL_PATH");
-  const auto crop_storage_path = require_env("ANALYTICS_CROP_STORAGE_PATH");
   // Reserved for future OpenVINO device selection (CPU/GPU) — validated now so a missing value
   // is visible immediately, even though stub inference doesn't use it yet.
   require_env("ANALYTICS_DEVICE");
 
   auto queue = std::make_shared<detection_queue>();
-  auto crops = std::make_shared<crop_writer>(crop_storage_path);
 
   auto watches = std::make_shared<watch_manager>(
     model_dir,
-    crops,
     [queue](const std::string& watch_id, const final_detection& det)
     {
       queue->push(queued_detection{ watch_id, det });
