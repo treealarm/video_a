@@ -23,6 +23,19 @@ const char* kind_name(detection_kind kind)
   }
   return "unknown";
 }
+
+// Face/plate detectors run on the parent crop, so their bbox is normalized relative to that crop,
+// not the full frame. Compose it back into full-frame normalized coordinates so every emitted
+// detection is in the same (full-frame) space — the consumer draws them all on the full frame.
+bbox_t to_full_frame(const bbox_t& parent, const bbox_t& child)
+{
+  return bbox_t{
+    .x = parent.x + child.x * parent.width,
+    .y = parent.y + child.y * parent.height,
+    .width = child.width * parent.width,
+    .height = child.height * parent.height,
+  };
+}
 }
 
 pipeline::pipeline(pipeline_config config, const std::string& model_dir)
@@ -127,7 +140,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .track_id = t.track_id,
             .kind = detection_kind::face,
             .confidence = f.confidence,
-            .bbox = f.bbox,
+            .bbox = to_full_frame(t.bbox, f.bbox),
             .detected_at = frame.captured_at,
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,
@@ -171,7 +184,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .track_id = t.track_id,
             .kind = detection_kind::license_plate,
             .confidence = p.confidence,
-            .bbox = p.bbox,
+            .bbox = to_full_frame(t.bbox, p.bbox),
             .detected_at = frame.captured_at,
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,

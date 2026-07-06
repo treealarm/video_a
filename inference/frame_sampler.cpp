@@ -4,9 +4,16 @@
 frame_sampler::frame_sampler(std::function<void(const decoded_frame&)> callback)
   : m_callback(std::move(callback))
 {
+  m_worker = std::thread([this] { worker_loop(); });
 }
 
-frame_sampler::~frame_sampler() = default;
+frame_sampler::~frame_sampler()
+{
+  m_running = false;
+  m_cv.notify_all();
+  if (m_worker.joinable())
+    m_worker.join();
+}
 
 void frame_sampler::on_packet(const std::shared_ptr<media_packet>& pkt)
 {
@@ -16,11 +23,42 @@ void frame_sampler::on_packet(const std::shared_ptr<media_packet>& pkt)
   // Never hand non-key packets to the decoder at all.
   if (!(pkt->packet->flags & AV_PKT_FLAG_KEY)) return;
 
-  std::scoped_lock lock(m_mutex);
+  // Enqueue only — the heavy decode + inference happens on the worker thread so this (the RTSP read
+  // loop) returns immediately and keeps draining the socket. Drop the oldest queued keyframe when
+  // the worker is behind: the newest keyframe is what matters, and blocking here would stall the
+  // source (see the header note on live-video stutter).
+  {
+    std::scoped_lock lock(m_queue_mutex);
+    while (m_queue.size() >= k_max_queue)
+      m_queue.pop_front();
+    m_queue.push_back(pkt);
+  }
+  m_cv.notify_one();
+}
 
-  if (!ensure_decoder(*pkt)) return;
+void frame_sampler::worker_loop()
+{
+  while (m_running)
+  {
+    std::shared_ptr<media_packet> pkt;
+    {
+      std::unique_lock lock(m_queue_mutex);
+      m_cv.wait(lock, [&] { return !m_queue.empty() || !m_running; });
+      if (!m_running)
+        break;
+      pkt = std::move(m_queue.front());
+      m_queue.pop_front();
+    }
+    if (pkt)
+      decode_packet(*pkt);
+  }
+}
 
-  if (avcodec_send_packet(m_decoder_ctx.get(), pkt->packet.get()) < 0)
+void frame_sampler::decode_packet(const media_packet& pkt)
+{
+  if (!ensure_decoder(pkt)) return;
+
+  if (avcodec_send_packet(m_decoder_ctx.get(), pkt.packet.get()) < 0)
     return;
 
   AVFrame* frame = av_frame_alloc();

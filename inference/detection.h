@@ -39,6 +39,8 @@ struct final_detection {
   int64_t track_id = 0;
   detection_kind kind = detection_kind::person;
   float confidence = 0.0f;
+  // Always normalized to the FULL frame (0..1), for every kind — face/plate bboxes are composed
+  // back from their parent crop's space before ending up here (see pipeline::to_full_frame).
   bbox_t bbox;
   std::chrono::system_clock::time_point detected_at;
   std::optional<std::string> recognized_text;

@@ -1,9 +1,12 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
-#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "interfaces/media_sink.h"
@@ -26,6 +29,14 @@ struct decoded_frame {
 // skipping P/B packets entirely costs nothing on the decoder side, unlike decode-then-discard).
 // Consequence: the effective sampling rate is bound by the stream's GOP/keyframe interval, not
 // freely selectable — sample_fps in WatchRequest is a target/upper bound, not a guarantee.
+//
+// Decode + inference run on a dedicated worker thread, NOT in the caller's (rtsp_reader's) thread.
+// This is load-bearing: on_packet is called from the RTSP read loop, so if the heavy work ran
+// inline it would stop draining the socket for the duration of an inference pass. On an RTSP-over-
+// TCP source (MediaMTX) that stalls the reader, back-pressures the server, and makes it deliver in
+// bursts — which shows up as the *live* WebRTC view stuttering and fast-forwarding. Keeping the
+// read loop free means the socket is always drained at real time; keyframes queue up and the worker
+// drops the oldest if inference can't keep up (freshest-frame-wins, bounded latency).
 class frame_sampler final : public media_sink {
 public:
   explicit frame_sampler(std::function<void(const decoded_frame&)> callback);
@@ -37,10 +48,21 @@ private:
   bool ensure_decoder(const media_packet& pkt);
   bool ensure_sws_context(int width, int height, AVPixelFormat format);
   void handle_decoded_frame(AVFrame* frame);
+  void worker_loop();
+  void decode_packet(const media_packet& pkt);
 
   std::function<void(const decoded_frame&)> m_callback;
-  std::mutex m_mutex;
 
+  // Queue of keyframe packets handed from the read loop to the decode/inference worker. Bounded and
+  // drop-oldest: a keyframe is worthless once a newer one exists, and the read loop must never block.
+  static constexpr size_t k_max_queue = 2;
+  std::mutex m_queue_mutex;
+  std::condition_variable m_cv;
+  std::deque<std::shared_ptr<media_packet>> m_queue;
+  std::atomic_bool m_running{true};
+  std::thread m_worker;
+
+  // Decoder/sws state is touched only by the worker thread — no locking needed.
   using avcodec_context_ptr = std::unique_ptr<AVCodecContext, avcodec_context_deleter>;
   avcodec_context_ptr m_decoder_ctx;
 
