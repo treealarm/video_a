@@ -2,6 +2,7 @@
 
 #include "reader/rtsp_reader.h"
 #include "inference/frame_sampler.h"
+#include "inference/inference_worker.h"
 #include "inference/pipeline.h"
 #include "logging.h"
 
@@ -40,9 +41,17 @@ bool watch_manager::start_watch(const watch_params& params)
   auto on_detection = m_on_detection;
   const auto watch_id = params.watch_id;
 
-  entry.sampler = std::make_shared<frame_sampler>([pipeline_ptr, on_detection, watch_id](const decoded_frame& frame)
+  // Stage 3 (detect thread): run inference on decoded frames.
+  entry.inference = std::make_shared<inference_worker>([pipeline_ptr, on_detection, watch_id](const decoded_frame& frame)
   {
     pipeline_ptr->process_frame(frame, [&](const final_detection& det) { on_detection(watch_id, det); });
+  });
+
+  // Stage 2 (decode thread): frame_sampler decodes keyframes and hands them to the detect stage.
+  auto* inference_ptr = entry.inference.get();
+  entry.sampler = std::make_shared<frame_sampler>([inference_ptr](const decoded_frame& frame)
+  {
+    inference_ptr->submit(frame);
   });
 
   entry.reader = std::make_shared<rtsp_reader>(params.watch_id, params.cred_user, params.cred_pass);

@@ -48,6 +48,8 @@ set(SOURCES
     inference/detection.h
     inference/frame_sampler.cpp
     inference/frame_sampler.h
+    inference/inference_worker.cpp
+    inference/inference_worker.h
     inference/primary_detector.cpp
     inference/primary_detector.h
     inference/face_detector.cpp

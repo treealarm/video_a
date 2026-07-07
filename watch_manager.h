@@ -13,6 +13,7 @@
 class rtsp_reader;
 class pipeline;
 class frame_sampler;
+class inference_worker;
 
 struct watch_params {
   std::string watch_id;
@@ -43,10 +44,15 @@ public:
   void stop_watch(const std::string& watch_id);
 
 private:
+  // Member order is load-bearing: destruction runs in reverse declaration order, and each stage's
+  // thread must be joined before the object it calls into is destroyed. Reverse order here is
+  // reader (stage 1) -> sampler (stage 2, joins its decode thread) -> inference (stage 3, joins its
+  // detect thread) -> pipeline_instance (used by the detect thread, so destroyed last).
   struct watch_entry {
-    std::shared_ptr<rtsp_reader> reader;
-    std::shared_ptr<frame_sampler> sampler;
     std::unique_ptr<pipeline> pipeline_instance;
+    std::shared_ptr<inference_worker> inference;
+    std::shared_ptr<frame_sampler> sampler;
+    std::shared_ptr<rtsp_reader> reader;
   };
 
   void stop_watch_locked(const std::string& watch_id);
