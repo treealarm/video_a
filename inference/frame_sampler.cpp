@@ -1,6 +1,23 @@
 #include "frame_sampler.h"
 #include "logging.h"
 
+namespace {
+// Map deprecated JPEG-range pixel formats (YUVJ*) to their modern equivalents. Feeding a YUVJ
+// format to sws_getContext logs "deprecated pixel format used" on every frame; the full range is
+// signalled explicitly via sws_setColorspaceDetails instead.
+AVPixelFormat normalize_pixel_format(AVPixelFormat fmt, bool& full_range)
+{
+  switch (fmt)
+  {
+    case AV_PIX_FMT_YUVJ420P: full_range = true; return AV_PIX_FMT_YUV420P;
+    case AV_PIX_FMT_YUVJ422P: full_range = true; return AV_PIX_FMT_YUV422P;
+    case AV_PIX_FMT_YUVJ444P: full_range = true; return AV_PIX_FMT_YUV444P;
+    case AV_PIX_FMT_YUVJ440P: full_range = true; return AV_PIX_FMT_YUV440P;
+    default:                  full_range = false; return fmt;
+  }
+}
+}
+
 frame_sampler::frame_sampler(std::function<void(const decoded_frame&)> callback)
   : m_callback(std::move(callback))
 {
@@ -109,16 +126,26 @@ bool frame_sampler::ensure_sws_context(int width, int height, AVPixelFormat form
   if (m_sws_ctx && width == m_sws_width && height == m_sws_height && format == m_sws_format)
     return true;
 
+  bool full_range = false;
+  const AVPixelFormat src_format = normalize_pixel_format(format, full_range);
+
   m_sws_ctx.reset(sws_getContext(
-    width, height, format,
+    width, height, src_format,
     width, height, AV_PIX_FMT_BGR24,
     SWS_BILINEAR, nullptr, nullptr, nullptr));
 
   if (!m_sws_ctx) return false;
 
+  if (full_range)
+  {
+    // JPEG full-range (0..255) input — tell sws so luma/chroma aren't wrongly rescaled.
+    const int* coeffs = sws_getCoefficients(SWS_CS_ITU601);
+    sws_setColorspaceDetails(m_sws_ctx.get(), coeffs, /*srcRange=*/1, coeffs, /*dstRange=*/1, 0, 1 << 16, 1 << 16);
+  }
+
   m_sws_width = width;
   m_sws_height = height;
-  m_sws_format = format;
+  m_sws_format = format; // cache on the ORIGINAL format so the comparison above still matches
   return true;
 }
 
