@@ -27,7 +27,7 @@ Requires these environment variables (see `.env`):
 - `ANALYTICS_GRPC_PORT` — gRPC listen port.
 - `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector.xml/.bin` (or `.onnx`),
   `face_detector.xml/.bin`, `plate_detector.xml/.bin`, `plate_ocr.xml/.bin` (OpenVINO IR pairs).
-  `primary_detector` (person/vehicle, YOLOv8-style) and `face_detector` (OMZ face-detection-0205)
+  `primary_detector` (person/vehicle, YOLOv11-style) and `face_detector` (OMZ face-detection-0205)
   are wired in; `plate_detector`/`plate_ocr` are still stubs that return empty results. A missing
   model file puts that detector into stub mode with a startup warning.
 - `ANALYTICS_DEVICE` — OpenVINO device selection (`CPU`/`GPU`).
@@ -56,9 +56,14 @@ missing (override the path with `VMS_REC_DIR`).
 
 The image bakes `models/` in (`COPY --from=builder /build/models /models`, `ANALYTICS_MODEL_PATH`
 defaults to `/models`) so a container works with no extra volume or fetch step. **Licensing
-note:** `models/primary_detector.*` is a YOLOv8n export and Ultralytics YOLOv8 is AGPL-3.0 —
+note:** `models/primary_detector.*` is a YOLOv11n export and Ultralytics YOLOv11 is AGPL-3.0 —
 baking it into a distributed/deployed image is a deliberate, not-yet-fully-reconciled call (see
 `ta_install/README.md`'s "Analytics models" section). `models/` itself is gitignored; regenerate
 `primary_detector.xml/.bin` with `pip install ultralytics && python -c "from ultralytics import
-YOLO; YOLO('yolov8n.pt').export(format='openvino', imgsz=640)"` and `face_detector.xml/.bin` from
+YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"` and `face_detector.xml/.bin` from
 OMZ face-detection-0205 (Apache-2.0).
+
+Linking note: `openvino::openvino_intel_cpu_plugin` must be linked with `--whole-archive`
+(see `CMakeLists.txt`) — without it, the static CPU plugin silently drops object files for less
+common op kernels (e.g. YOLOv11's C2PSA attention `MatMul`), causing a crash at inference time
+even though the model loads successfully.
