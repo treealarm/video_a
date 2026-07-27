@@ -29,11 +29,14 @@ int main()
   // Reserved for future OpenVINO device selection (CPU/GPU) — validated now so a missing value
   // is visible immediately, even though stub inference doesn't use it yet.
   require_env("ANALYTICS_DEVICE");
+  // How often (seconds) a still-live track re-emits its re-id embedding (START is always emitted).
+  const int reid_embed_interval_sec = std::stoi(require_env("ANALYTICS_REID_EMBED_INTERVAL_SEC"));
 
   auto queue = std::make_shared<detection_queue>();
 
   auto watches = std::make_shared<watch_manager>(
     model_dir,
+    reid_embed_interval_sec,
     [queue](const std::string& watch_id, const final_detection& det)
     {
       queue->push(queued_detection{ watch_id, det });

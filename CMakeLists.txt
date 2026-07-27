@@ -60,6 +60,8 @@ set(SOURCES
     inference/plate_ocr.h
     inference/tracker.cpp
     inference/tracker.h
+    inference/person_embedder.cpp
+    inference/person_embedder.h
     inference/pipeline.cpp
     inference/pipeline.h
 )
