@@ -47,7 +47,9 @@ struct final_detection {
   std::optional<float> text_confidence;
   // Always set for face/license_plate; for person/vehicle only under attach_debug_crops.
   std::vector<uint8_t> crop_jpeg;
-  // L2-normalized appearance embedding for re-identification. Empty unless an embedder model is
-  // loaded and this detection was chosen to carry one (see pipeline: track START + interval).
+  // L2-normalized appearance embedding for re-identification. Carried on every frame of a live
+  // track (empty when no embedder model), but only recomputed on START + interval.
   std::vector<float> embedding;
+  // True only on the frame the embedding was freshly recomputed; false on the carried-along repeats.
+  bool embedding_is_fresh = false;
 };

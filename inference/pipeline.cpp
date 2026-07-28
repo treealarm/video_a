@@ -129,6 +129,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .text_confidence = std::nullopt,
           .crop_jpeg = {},
           .embedding = {},
+          .embedding_is_fresh = false,
         };
         if (m_config.attach_debug_crops)
           out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
@@ -149,6 +150,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             {
               slot.value = std::move(fresh);
               slot.computed_at = now;
+              out.embedding_is_fresh = true; // computed this frame -> a real new observation
             }
           }
 
@@ -157,6 +159,8 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           // drop-oldest, so an emit carrying a once-per-interval field can vanish and the track
           // would then carry no embedding for a full interval — permanently, for the common case
           // of a track shorter than one interval. Every other field already self-heals this way.
+          // embedding_is_fresh (set above only when recomputed) lets the consumer record a gallery
+          // sighting once per real observation rather than once per carried-along frame.
           out.embedding = slot.value;
         }
         emit(out);
