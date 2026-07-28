@@ -35,7 +35,7 @@ class watch_manager {
 public:
   using detection_callback = std::function<void(const std::string& watch_id, const final_detection&)>;
 
-  watch_manager(std::string model_dir, detection_callback on_detection);
+  watch_manager(std::string model_dir, int reid_embed_interval_sec, detection_callback on_detection);
   ~watch_manager();
 
   // Idempotent: re-calling with the same watch_id tears down and recreates the watch with the
@@ -58,6 +58,7 @@ private:
   void stop_watch_locked(const std::string& watch_id);
 
   std::string m_model_dir;
+  int m_reid_embed_interval_sec;
   detection_callback m_on_detection;
 
   std::mutex m_mutex;

@@ -14,6 +14,7 @@
                 { "name": "ANALYTICS_GRPC_PORT", "value": "50060" },
                 { "name": "ANALYTICS_MODEL_PATH", "value": "${workspaceFolder}/models" },
                 { "name": "ANALYTICS_DEVICE", "value": "CPU" },
+                { "name": "ANALYTICS_REID_EMBED_INTERVAL_SEC", "value": "15" },
                 { "name": "ANALYTICS_STUB_SYNTHETIC_DETECTIONS", "value": "false" }
             ],
             "cwd": "${workspaceFolder}",

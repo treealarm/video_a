@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cstring>
 
+#include <unordered_set>
+
 #include "primary_detector.h"
 #include "face_detector.h"
 #include "plate_detector.h"
 #include "plate_ocr.h"
 #include "tracker.h"
+#include "person_embedder.h"
 #include "../crop_encoder.h"
 #include "../logging.h"
 
@@ -45,6 +48,7 @@ pipeline::pipeline(pipeline_config config, const std::string& model_dir)
   , m_plate(std::make_unique<plate_detector>(model_dir + "/plate_detector"))
   , m_ocr(std::make_unique<plate_ocr>(model_dir + "/plate_ocr"))
   , m_tracker(std::make_unique<tracker>())
+  , m_person_embed(std::make_unique<person_embedder>(model_dir + "/person_embedder"))
 {
 }
 
@@ -124,9 +128,41 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .recognized_text = std::nullopt,
           .text_confidence = std::nullopt,
           .crop_jpeg = {},
+          .embedding = {},
+          .embedding_is_fresh = false,
         };
         if (m_config.attach_debug_crops)
           out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
+
+        // Recompute a re-id embedding on the track's first frame (START) and then at most once per
+        // reid_embed_interval_sec — enough for the downstream matcher to re-identify the object
+        // without paying an embed on every sampled frame.
+        if (m_person_embed->loaded())
+        {
+          const auto now = std::chrono::steady_clock::now();
+          auto& slot = m_track_embed[t.track_id];
+          const bool due = slot.value.empty() ||
+            now - slot.computed_at >= std::chrono::seconds(m_config.reid_embed_interval_sec);
+          if (due)
+          {
+            auto fresh = m_person_embed->embed(frame, t.bbox);
+            if (!fresh.empty())
+            {
+              slot.value = std::move(fresh);
+              slot.computed_at = now;
+              out.embedding_is_fresh = true; // computed this frame -> a real new observation
+            }
+          }
+
+          // The *inference* is rate-limited, but the vector is re-sent on every frame of the track
+          // rather than only on the frame it was computed on. detection_queue is bounded
+          // drop-oldest, so an emit carrying a once-per-interval field can vanish and the track
+          // would then carry no embedding for a full interval — permanently, for the common case
+          // of a track shorter than one interval. Every other field already self-heals this way.
+          // embedding_is_fresh (set above only when recomputed) lets the consumer record a gallery
+          // sighting once per real observation rather than once per carried-along frame.
+          out.embedding = slot.value;
+        }
         emit(out);
       }
 
@@ -146,6 +182,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .text_confidence = std::nullopt,
             // Face crops are the caller's persistent artifact — always attached.
             .crop_jpeg = encode_crop_jpeg(crop_region(person_crop, f.bbox)),
+            .embedding = {},
           };
           emit(out);
         }
@@ -164,6 +201,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .recognized_text = std::nullopt,
           .text_confidence = std::nullopt,
           .crop_jpeg = {},
+          .embedding = {},
         };
         if (m_config.attach_debug_crops)
           out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
@@ -190,6 +228,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .text_confidence = std::nullopt,
             // Plate crops are the caller's persistent artifact — always attached.
             .crop_jpeg = encode_crop_jpeg(plate_crop),
+            .embedding = {},
           };
           if (ocr)
           {
@@ -200,5 +239,17 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
         }
       }
     }
+  }
+
+  // Prune cached per-track embeddings down to the tracks seen this frame — the IoU tracker drops
+  // unmatched tracks immediately, so anything absent here is gone and must not leak.
+  if (!m_track_embed.empty())
+  {
+    std::unordered_set<int64_t> live;
+    live.reserve(tracked.size());
+    for (const auto& t : tracked)
+      live.insert(t.track_id);
+    for (auto it = m_track_embed.begin(); it != m_track_embed.end();)
+      it = live.contains(it->first) ? std::next(it) : m_track_embed.erase(it);
   }
 }

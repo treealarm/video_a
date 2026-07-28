@@ -6,8 +6,9 @@
 #include "inference/pipeline.h"
 #include "logging.h"
 
-watch_manager::watch_manager(std::string model_dir, detection_callback on_detection)
+watch_manager::watch_manager(std::string model_dir, int reid_embed_interval_sec, detection_callback on_detection)
   : m_model_dir(std::move(model_dir))
+  , m_reid_embed_interval_sec(reid_embed_interval_sec)
   , m_on_detection(std::move(on_detection))
 {
 }
@@ -33,6 +34,7 @@ bool watch_manager::start_watch(const watch_params& params)
   cfg.classes = params.classes;
   cfg.min_confidence = params.min_confidence;
   cfg.attach_debug_crops = params.attach_debug_crops;
+  cfg.reid_embed_interval_sec = m_reid_embed_interval_sec;
 
   watch_entry entry;
   entry.pipeline_instance = std::make_unique<pipeline>(cfg, m_model_dir);

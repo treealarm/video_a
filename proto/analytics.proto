@@ -75,4 +75,16 @@ message DetectionEvent {
   // PERSON / VEHICLE only when WatchRequest.attach_debug_crops. The worker keeps no copy —
   // persisting this is entirely the caller's concern (video_a is stateless).
   bytes crop_jpeg = 10;
+  // L2-normalized appearance embedding of the object, for downstream re-identification. The
+  // embedding space is implied by `kind` (PERSON -> body/OSNet, FACE -> face/ArcFace). Present on
+  // every frame of a live track (so a bounded drop-oldest queue can never leave a track with no
+  // vector), but only actually recomputed on track START and once per ANALYTICS_REID_EMBED_INTERVAL_SEC
+  // thereafter — the carried-along frames repeat the last computed vector. Empty when no embedder
+  // model is loaded. The worker assigns no identity; matching an embedding to an object_id is the
+  // caller's concern.
+  repeated float embedding = 11;
+  // True only on the frame the embedding was freshly recomputed (START / interval); false on the
+  // carried-along repeats. Lets the caller record a gallery sighting once per real observation
+  // instead of once per frame, without losing the vector to queue drops.
+  bool embedding_is_fresh = 12;
 }

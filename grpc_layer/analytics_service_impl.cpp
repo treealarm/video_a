@@ -117,6 +117,11 @@ grpc::Status analytics_service_impl::StreamDetections(
     if (item->detection.text_confidence) evt.set_text_confidence(*item->detection.text_confidence);
     if (!item->detection.crop_jpeg.empty())
       evt.set_crop_jpeg(item->detection.crop_jpeg.data(), item->detection.crop_jpeg.size());
+    if (!item->detection.embedding.empty())
+    {
+      *evt.mutable_embedding() = {item->detection.embedding.begin(), item->detection.embedding.end()};
+      evt.set_embedding_is_fresh(item->detection.embedding_is_fresh);
+    }
 
     if (!writer->Write(evt))
     {
