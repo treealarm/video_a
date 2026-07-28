@@ -1,5 +1,9 @@
 #include "inference_worker.h"
 
+#include <exception>
+
+#include "../logging.h"
+
 inference_worker::inference_worker(std::function<void(const decoded_frame&)> detect)
   : m_detect(std::move(detect))
 {
@@ -38,7 +42,17 @@ void inference_worker::worker_loop()
       frame = std::move(m_queue.front());
       m_queue.pop_front();
     }
-    if (m_detect)
-      m_detect(frame);
+    // Nothing sits above this std::thread to catch anything a detector throws, so an escaping
+    // exception would std::terminate the whole process — every other watch included — over one
+    // bad frame. Log and keep the stage alive instead.
+    try
+    {
+      if (m_detect)
+        m_detect(frame);
+    }
+    catch (const std::exception& ex)
+    {
+      log()->error("inference_worker: detect stage threw, dropping frame: {}", ex.what());
+    }
   }
 }

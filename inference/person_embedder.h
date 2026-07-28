@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -29,14 +30,16 @@ public:
   int dim() const noexcept { return m_dim; }
 
 private:
-  bool m_loaded = false;
+  // Read from the pipeline thread via loaded() while embed() may clear it after a failed infer.
+  std::atomic<bool> m_loaded{false};
   ov::Core m_core;
   ov::CompiledModel m_compiled;
   ov::InferRequest m_request;
-  std::string m_input_name;
-  std::string m_output_name;
   std::mutex m_infer_mu;
   int m_input_h = 256;
   int m_input_w = 128;
   int m_dim = 0;
+  // ReID exports are commonly shipped as f16 (and INT8-quantized exports keep an f16 output), so
+  // the output is read through whichever of the two precisions the compiled model actually uses.
+  bool m_output_f16 = false;
 };

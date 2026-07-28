@@ -22,8 +22,9 @@ struct pipeline_config {
   std::vector<detection_kind> classes;
   float min_confidence = 0.5f;
   bool attach_debug_crops = false;
-  // How often (seconds) to attach a fresh re-id embedding to a still-live track. An embedding is
-  // always attached on the first frame a track is seen (START), then at most once per interval.
+  // How often (seconds) to recompute the re-id embedding of a still-live track. It is computed on
+  // the first frame a track is seen (START) and then at most once per interval; the most recent
+  // vector is attached to every emitted detection of the track regardless.
   int reid_embed_interval_sec = 15;
 };
 
@@ -51,8 +52,13 @@ private:
   std::unique_ptr<tracker> m_tracker;
   std::unique_ptr<person_embedder> m_person_embed;
 
-  // Last time a re-id embedding was attached, per live track. A track absent from this map has
-  // not been embedded yet (its next frame is treated as START). Pruned to the currently-tracked
-  // set each frame so it can't leak as track ids churn.
-  std::unordered_map<int64_t, std::chrono::steady_clock::time_point> m_last_embed;
+  struct track_embedding {
+    std::chrono::steady_clock::time_point computed_at{};
+    std::vector<float> value;
+  };
+
+  // Most recent re-id embedding per live track, and when it was computed. A track absent from this
+  // map has not been embedded yet (its next frame is treated as START). Pruned to the
+  // currently-tracked set each frame so it can't leak as track ids churn.
+  std::unordered_map<int64_t, track_embedding> m_track_embed;
 };

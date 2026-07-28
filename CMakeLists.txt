@@ -100,19 +100,28 @@ target_link_libraries(analytics-worker
     gRPC::grpc++
     spdlog::spdlog
     openvino::runtime
-    openvino::openvino_intel_cpu_plugin
 )
 
-# Static OpenVINO plugins rely on linker pulling object files with registration
-# symbols; --whole-archive prevents silent zero-output inference at runtime (this was the
-# root cause of YOLOv11's C2PSA attention MatMul crashing while YOLOv8's plain conv blocks
-# happened to link fine without it).
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-  target_link_options(analytics-worker PRIVATE
-    "LINKER:--whole-archive"
-    "$<TARGET_FILE:openvino::openvino_intel_cpu_plugin>"
-    "LINKER:--no-whole-archive"
-  )
+# openvino::openvino_intel_cpu_plugin only exists on static-plugin OpenVINO builds (e.g. vcpkg's,
+# where it is a STATIC IMPORTED target). A shared OpenVINO — the pip/apt packages — loads the CPU
+# plugin at runtime via plugins.xml and never declares the target at all, so referencing it
+# unconditionally fails at generate time. Guard on the target instead of on the toolchain.
+if(TARGET openvino::openvino_intel_cpu_plugin)
+  target_link_libraries(analytics-worker PRIVATE openvino::openvino_intel_cpu_plugin)
+
+  # Static OpenVINO plugins rely on linker pulling object files with registration
+  # symbols; --whole-archive prevents silent zero-output inference at runtime (this was the
+  # root cause of YOLOv11's C2PSA attention MatMul crashing while YOLOv8's plain conv blocks
+  # happened to link fine without it).
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_link_options(analytics-worker PRIVATE
+      "LINKER:--whole-archive"
+      "$<TARGET_FILE:openvino::openvino_intel_cpu_plugin>"
+      "LINKER:--no-whole-archive"
+    )
+  endif()
+else()
+  message(STATUS "OpenVINO CPU plugin is shared (loaded at runtime) — skipping --whole-archive link")
 endif()
 
 target_compile_definitions(analytics-worker PRIVATE _CRT_SECURE_NO_WARNINGS)
