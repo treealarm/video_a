@@ -6,8 +6,8 @@ model — the caller tells it "watch this RTSP URL with these parameters" via `S
 `StopWatch`, and reads back a stream of `DetectionEvent`s via `StreamDetections`, tagged with the
 caller-assigned `watch_id`. See `proto/analytics.proto` for the full contract.
 
-Consumed by [vms_rec](../vms_rec)'s `VmsAnalytics` service over Dapr service invocation (see that
-repo's plan doc for the full two-repo architecture) — but nothing here depends on vms_rec, Dapr,
+Consumed by [ta_vms](../ta_vms)'s `VmsAnalytics` service over Dapr service invocation (see that
+repo's plan doc for the full two-repo architecture) — but nothing here depends on ta_vms, Dapr,
 or any particular consumer.
 
 ## Building
@@ -42,22 +42,22 @@ Requires these environment variables (see `.env`):
 
 ## Docker
 
-The canonical product deployment (this worker together with the whole vms_rec stack, prebuilt
+The canonical product deployment (this worker together with the whole ta_vms stack, prebuilt
 images) lives in the separate `ta_install` repository — build/publish the `analytics-worker`
 image from there via `scripts/build-images.sh` / `scripts/push-images.sh`.
 
 The local `docker-compose.yml` here is a dev convenience: it runs `analytics-worker` plus a Dapr
 sidecar (`analytics-worker-dapr`) on the shared `common_app_network` (external — expected to
-already exist, created by whichever consumer stack, e.g. vms_rec, starts first). The application
+already exist, created by whichever consumer stack, e.g. ta_vms, starts first). The application
 binary itself contains zero Dapr-specific code; the sidecar transparently proxies gRPC calls to
 its plain `grpc::Service` — see `grpc_layer/analytics_service_impl.h`.
 
-The Dockerfile's builder stage is `FROM vms-deps` — the same base image `vms_rec/media_server`
+The Dockerfile's builder stage is `FROM vms-deps` — the same base image `ta_vms/media_server`
 builds from, with protobuf/grpc/spdlog/ffmpeg/openvino prebuilt (see that repo's
 `vms-deps/Dockerfile`), so this repo's own image build doesn't recompile them. That means a bare
 `docker compose build` here only works if `vms-deps` already exists locally; use
-`scripts/build.sh` instead — it builds `vms-deps` from a sibling `../vms_rec` checkout first if
-missing (override the path with `VMS_REC_DIR`).
+`scripts/build.sh` instead — it builds `vms-deps` from a sibling `../ta_vms` checkout first if
+missing (override the path with `TA_VMS_DIR`).
 
 The image bakes `models/` in (`COPY --from=builder /build/models /models`, `ANALYTICS_MODEL_PATH`
 defaults to `/models`) so a container works with no extra volume or fetch step. **Licensing

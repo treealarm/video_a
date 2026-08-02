@@ -1,6 +1,6 @@
-# video_a is a secondary/optional component meant to run alongside an already-running vms_rec
+# video_a is a secondary/optional component meant to run alongside an already-running ta_vms
 # (or Square) stack — the shared network is expected to already exist by the time this compose
-# file starts, hence `external: true` (unlike vms_rec's own compose, which creates it if absent).
+# file starts, hence `external: true` (unlike ta_vms's own compose, which creates it if absent).
 networks:
   default:
     name: common_app_network

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.5
 #
-# Builder reuses vms_rec's vms-deps image for the C++ toolchain + shared vcpkg deps
+# Builder reuses ta_vms's vms-deps image for the C++ toolchain + shared vcpkg deps
 # (protobuf/grpc/spdlog/ffmpeg/openvino) instead of rebuilding them here — see scripts/build.sh,
-# which builds vms-deps from the sibling vms_rec checkout first if it's missing locally.
+# which builds vms-deps from the sibling ta_vms checkout first if it's missing locally.
 
 FROM vms-deps AS builder
 

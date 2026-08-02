@@ -1,9 +1,9 @@
-// Canonical source of the analytics contract. Consumed by vms_rec as a vendored copy at
+// Canonical source of the analytics contract. Consumed by ta_vms as a vendored copy at
 // web_vms/VmsAnalytics/proto/analytics.proto — keep both in sync manually when this changes.
 //
 // video_a is a generic, product-agnostic RTSP-analytics engine: it knows nothing about camera
 // models, VmsCfg, or Dapr pub/sub. It exposes a small imperative control surface (StartWatch /
-// StopWatch) plus a single detection stream; the caller (VmsAnalytics in vms_rec) is the only
+// StopWatch) plus a single detection stream; the caller (VmsAnalytics in ta_vms) is the only
 // side that maps watch_id back to its own domain concepts.
 syntax = "proto3";
 

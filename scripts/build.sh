@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the analytics-worker docker image, ensuring the shared vms-deps base (owned by vms_rec —
+# Builds the analytics-worker docker image, ensuring the shared vms-deps base (owned by ta_vms —
 # protobuf/grpc/spdlog/ffmpeg/openvino, prebuilt so this repo's Dockerfile doesn't recompile them)
 # exists first.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VMS_REC_DIR="${VMS_REC_DIR:-$SCRIPT_DIR/../../vms_rec}"
+TA_VMS_DIR="${TA_VMS_DIR:-$SCRIPT_DIR/../../ta_vms}"
 
-[ -d "$VMS_REC_DIR" ] || { echo "vms_rec checkout not found: $VMS_REC_DIR (set VMS_REC_DIR)"; exit 1; }
+[ -d "$TA_VMS_DIR" ] || { echo "ta_vms checkout not found: $TA_VMS_DIR (set TA_VMS_DIR)"; exit 1; }
 
 if ! docker image inspect vms-deps &>/dev/null; then
     echo "=== Building vms-deps ==="
-    docker build -t vms-deps "$VMS_REC_DIR/vms-deps"
+    docker build -t vms-deps "$TA_VMS_DIR/vms-deps"
 else
     echo "=== vms-deps already exists, skipping ==="
 fi

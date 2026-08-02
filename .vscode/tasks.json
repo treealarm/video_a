@@ -37,7 +37,7 @@
         },
         {
             "label": "dapr:analytics-worker:start",
-            "detail": "Plain gRPC service invocation sidecar — no components (no pub/sub, no state store), no placement (not an actor). Lets vms_rec's VmsAnalytics (DAPR_ANALYTICS_WORKER_APP_ID=analytics-worker) discover this over local mDNS, same as vms_rec's own local dapr sidecars discover each other.",
+            "detail": "Plain gRPC service invocation sidecar — no components (no pub/sub, no state store), no placement (not an actor). Lets ta_vms's VmsAnalytics (DAPR_ANALYTICS_WORKER_APP_ID=analytics-worker) discover this over local mDNS, same as ta_vms's own local dapr sidecars discover each other.",
             "type": "shell",
             "command": "bash",
             "args": [

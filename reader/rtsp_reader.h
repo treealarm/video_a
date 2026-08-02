@@ -17,7 +17,7 @@ extern "C" {
 #include <libavutil/time.h>
 }
 
-// Forked from vms_rec's media_server/reader/rtsp_reader.* — trimmed of the ONVIF GetStreamUri
+// Forked from ta_vms's media_server/reader/rtsp_reader.* — trimmed of the ONVIF GetStreamUri
 // fallback resolve path. video_a never resolves stream URLs itself: WatchRequest.rtsp_url always
 // arrives already fully resolved from the caller (VmsAnalytics), so this reader has no knowledge
 // of ONVIF/VmsCfg/camera models at all.
