@@ -52,11 +52,11 @@ already exist, created by whichever consumer stack, e.g. ta_vms, starts first). 
 binary itself contains zero Dapr-specific code; the sidecar transparently proxies gRPC calls to
 its plain `grpc::Service` — see `grpc_layer/analytics_service_impl.h`.
 
-The Dockerfile's builder stage is `FROM vms-deps` — the same base image `ta_vms/media_server`
+The Dockerfile's builder stage is `FROM ta-deps` — the same base image `ta_vms/media_server`
 builds from, with protobuf/grpc/spdlog/ffmpeg/openvino prebuilt (see that repo's
-`vms-deps/Dockerfile`), so this repo's own image build doesn't recompile them. That means a bare
-`docker compose build` here only works if `vms-deps` already exists locally; use
-`scripts/build.sh` instead — it builds `vms-deps` from a sibling `../ta_vms` checkout first if
+`ta-deps/Dockerfile`), so this repo's own image build doesn't recompile them. That means a bare
+`docker compose build` here only works if `ta-deps` already exists locally; use
+`scripts/build.sh` instead — it builds `ta-deps` from a sibling `../ta_vms` checkout first if
 missing (override the path with `TA_VMS_DIR`).
 
 The image bakes `models/` in (`COPY --from=builder /build/models /models`, `ANALYTICS_MODEL_PATH`
