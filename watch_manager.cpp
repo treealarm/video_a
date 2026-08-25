@@ -49,12 +49,14 @@ bool watch_manager::start_watch(const watch_params& params)
     pipeline_ptr->process_frame(frame, [&](const final_detection& det) { on_detection(watch_id, det); });
   });
 
-  // Stage 2 (decode thread): frame_sampler decodes keyframes and hands them to the detect stage.
+  // Stage 2 (decode thread): frame_sampler decodes and hands frames to the detect stage at the
+  // requested rate -- keyframes only where the stream keys often enough to supply it, every packet
+  // where it does not (see frame_sampler).
   auto* inference_ptr = entry.inference.get();
   entry.sampler = std::make_shared<frame_sampler>([inference_ptr](const decoded_frame& frame)
   {
     inference_ptr->submit(frame);
-  });
+  }, params.sample_fps);
 
   entry.reader = std::make_shared<rtsp_reader>(params.watch_id, params.cred_user, params.cred_pass);
   if (!entry.reader->open(params.rtsp_url))

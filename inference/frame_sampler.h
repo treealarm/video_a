@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -24,11 +25,24 @@ struct decoded_frame {
   std::chrono::system_clock::time_point captured_at;
 };
 
-// Keyframe-only decode: non-key packets are filtered out in on_packet() before ever reaching
-// avcodec_send_packet — see the project plan's rationale (I-frames are self-contained, so
-// skipping P/B packets entirely costs nothing on the decoder side, unlike decode-then-discard).
-// Consequence: the effective sampling rate is bound by the stream's GOP/keyframe interval, not
-// freely selectable — sample_fps in WatchRequest is a target/upper bound, not a guarantee.
+// Decodes keyframes only while that is enough to meet the requested rate, and everything when it
+// is not.
+//
+// Keyframe-only is the cheap path and stays the default: an I-frame is self-contained, so one
+// decoded frame costs one decoded frame, where decode-then-discard pays for the whole stream. Its
+// price is that the sampling rate is then the *publisher's* keyframe interval, not ours. That is
+// invisible on surveillance cameras, which key about once a second, and wrong on anything else: a
+// file with a 8.3 s GOP yielded one detection per 8.3 s no matter what sample_fps asked for, and
+// nothing in the system could say why.
+//
+// So the keyframe spacing is measured as packets arrive, and when it turns out to be longer than
+// the requested sample period the sampler switches to decoding every packet and picks frames on
+// its own schedule. Measured on this project's own footage, full decode of a 2688x1520 stream
+// costs about 12% of one core — real, but affordable, and only paid by sources that need it.
+//
+// sample_fps is therefore an upper bound that is now actually enforced: the emit schedule applies
+// in both modes, so a stream keying faster than the requested rate no longer runs inference more
+// often than asked.
 //
 // Decode + inference run on a dedicated worker thread, NOT in the caller's (rtsp_reader's) thread.
 // This is load-bearing: on_packet is called from the RTSP read loop, so if the heavy work ran
@@ -39,12 +53,18 @@ struct decoded_frame {
 // drops the oldest if inference can't keep up (freshest-frame-wins, bounded latency).
 class frame_sampler final : public media_sink {
 public:
-  explicit frame_sampler(std::function<void(const decoded_frame&)> callback);
+  // sample_fps is the target rate; 0 is read as 1. It bounds how often a decoded frame is handed
+  // on, and decides which decode mode the measured keyframe spacing has to beat.
+  frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps);
   ~frame_sampler() override;
 
   void on_packet(const std::shared_ptr<media_packet>& pkt) override;
 
 private:
+  // Read-loop thread only.
+  void note_keyframe();
+  void update_mode();
+
   bool ensure_decoder(const media_packet& pkt);
   bool ensure_sws_context(int width, int height, AVPixelFormat format);
   void handle_decoded_frame(AVFrame* frame);
@@ -53,14 +73,37 @@ private:
 
   std::function<void(const decoded_frame&)> m_callback;
 
-  // Queue of keyframe packets handed from the read loop to the decode/inference worker. Bounded and
-  // drop-oldest: a keyframe is worthless once a newer one exists, and the read loop must never block.
+  // Packets handed from the read loop to the decode/inference worker. The read loop must never
+  // block, so the queue is bounded and sheds under pressure -- but how it sheds depends on the
+  // mode, and the difference is not cosmetic.
+  //
+  // Keyframe-only: drop the oldest. A keyframe is worthless once a newer one exists, and each is
+  // independently decodable, so dropping one costs exactly that frame.
+  //
+  // Full decode: dropping an arbitrary packet would break the reference chain and corrupt every
+  // frame up to the next keyframe. Whole GOPs are discarded instead -- see on_packet -- so what
+  // remains always starts on a packet the decoder can start from. The bound is correspondingly
+  // larger, because one GOP is hundreds of packets rather than one.
   static constexpr size_t k_max_queue = 2;
+  static constexpr size_t k_max_queue_full = 120;
   std::mutex m_queue_mutex;
   std::condition_variable m_cv;
   std::deque<std::shared_ptr<media_packet>> m_queue;
   std::atomic_bool m_running{true};
   std::thread m_worker;
+
+  // How often a decoded frame may be handed on. Read-loop thread sets nothing here; the worker
+  // thread owns m_next_emit, which is the deadline the schedule runs on.
+  std::chrono::milliseconds m_emit_period{1000};
+  std::chrono::steady_clock::time_point m_next_emit{};
+
+  // Keyframe spacing and the mode it selects. Touched only by the read-loop thread, except
+  // m_full_decode which the worker never reads either -- the mode decides what is enqueued, and
+  // the worker simply decodes what it is given.
+  static constexpr size_t k_interval_gaps = 5;
+  std::deque<std::chrono::steady_clock::time_point> m_keyframe_times;
+  std::chrono::milliseconds m_keyframe_interval{0};  // 0 = not measured yet
+  bool m_full_decode = false;
 
   // Decoder/sws state is touched only by the worker thread — no locking needed.
   using avcodec_context_ptr = std::unique_ptr<AVCodecContext, avcodec_context_deleter>;

@@ -22,8 +22,9 @@ struct watch_params {
   std::string cred_pass;
   std::vector<detection_kind> classes;
   float min_confidence = 0.5f;
-  // Informational only for Phase 1 — the effective sample rate is bound by the stream's
-  // keyframe interval (see frame_sampler), not actively throttled to this value.
+  // The target rate, and an upper bound that is enforced: frame_sampler throttles to it, and
+  // decodes every packet rather than keyframes alone when the stream does not key often enough to
+  // supply it on the cheap path.
   uint32_t sample_fps = 1;
   bool attach_debug_crops = false;
 };

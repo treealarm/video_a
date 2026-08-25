@@ -1,6 +1,9 @@
 #include "frame_sampler.h"
 #include "logging.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace {
 // Map deprecated JPEG-range pixel formats (YUVJ*) to their modern equivalents. Feeding a YUVJ
 // format to sws_getContext logs "deprecated pixel format used" on every frame; the full range is
@@ -18,8 +21,9 @@ AVPixelFormat normalize_pixel_format(AVPixelFormat fmt, bool& full_range)
 }
 }
 
-frame_sampler::frame_sampler(std::function<void(const decoded_frame&)> callback)
+frame_sampler::frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps)
   : m_callback(std::move(callback))
+  , m_emit_period(std::chrono::milliseconds(1000 / (sample_fps > 0 ? sample_fps : 1)))
 {
   m_worker = std::thread([this] { worker_loop(); });
 }
@@ -37,20 +41,86 @@ void frame_sampler::on_packet(const std::shared_ptr<media_packet>& pkt)
   if (!pkt || !pkt->packet) return;
   if (pkt->media_type != AVMEDIA_TYPE_VIDEO) return;
 
-  // Never hand non-key packets to the decoder at all.
-  if (!(pkt->packet->flags & AV_PKT_FLAG_KEY)) return;
+  const bool is_key = (pkt->packet->flags & AV_PKT_FLAG_KEY) != 0;
+
+  // Keyframes are timed whatever the mode, because the measurement is what chooses the mode.
+  if (is_key)
+  {
+    note_keyframe();
+    update_mode();
+  }
+
+  if (!m_full_decode && !is_key)
+    return;  // the cheap path: non-key packets never reach the decoder at all
 
   // Enqueue only — the heavy decode + inference happens on the worker thread so this (the RTSP read
-  // loop) returns immediately and keeps draining the socket. Drop the oldest queued keyframe when
-  // the worker is behind: the newest keyframe is what matters, and blocking here would stall the
-  // source (see the header note on live-video stutter).
+  // loop) returns immediately and keeps draining the socket. Blocking here would stall the source
+  // (see the header note on live-video stutter), so the queue sheds instead.
   {
     std::scoped_lock lock(m_queue_mutex);
-    while (m_queue.size() >= k_max_queue)
+    if (!m_full_decode)
+    {
+      while (m_queue.size() >= k_max_queue)
+        m_queue.pop_front();
+    }
+    else if (m_queue.size() >= k_max_queue_full)
+    {
+      // Shed a whole GOP rather than a packet. Dropping one P-frame would leave the decoder
+      // producing garbage until the next keyframe, which is worse than losing the second or two
+      // this discards: pop the front, then keep popping until the queue starts on a keyframe
+      // again — a packet the decoder can actually begin from.
       m_queue.pop_front();
+      while (!m_queue.empty() && !(m_queue.front()->packet->flags & AV_PKT_FLAG_KEY))
+        m_queue.pop_front();
+      log()->warn("frame_sampler: decode is behind, dropped a GOP");
+    }
     m_queue.push_back(pkt);
   }
   m_cv.notify_one();
+}
+
+void frame_sampler::note_keyframe()
+{
+  const auto now = std::chrono::steady_clock::now();
+  m_keyframe_times.push_back(now);
+  while (m_keyframe_times.size() > k_interval_gaps + 1)
+    m_keyframe_times.pop_front();
+
+  if (m_keyframe_times.size() < 2)
+    return;
+
+  // Median of the gaps, not the mean. The outliers here are one-sided and large -- a reconnect or
+  // a stalled publisher contributes one enormous gap -- and a mean would let a single one of them
+  // push a well-behaved stream onto the expensive path and keep it there.
+  std::vector<std::chrono::milliseconds> gaps;
+  gaps.reserve(m_keyframe_times.size() - 1);
+  for (size_t i = 1; i < m_keyframe_times.size(); ++i)
+    gaps.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(
+      m_keyframe_times[i] - m_keyframe_times[i - 1]));
+  std::sort(gaps.begin(), gaps.end());
+  m_keyframe_interval = gaps[gaps.size() / 2];
+}
+
+void frame_sampler::update_mode()
+{
+  if (m_keyframe_interval.count() == 0)
+    return;  // nothing measured yet; the cheap path is also the one we would have chosen
+
+  // Hysteresis, because the interesting case is a stream whose keyframe spacing sits right at the
+  // requested period: without a band it would flip modes on jitter alone, and each flip costs a
+  // decoder that has to resynchronise.
+  const auto enter = m_emit_period * 3 / 2;
+  const auto leave = m_emit_period * 11 / 10;
+
+  const bool want_full = m_full_decode ? (m_keyframe_interval > leave)
+                                       : (m_keyframe_interval > enter);
+  if (want_full == m_full_decode)
+    return;
+
+  m_full_decode = want_full;
+  log()->info("frame_sampler: keyframe interval {} ms vs sample period {} ms — {} decode",
+    m_keyframe_interval.count(), m_emit_period.count(),
+    m_full_decode ? "switching to full" : "back to keyframe-only");
 }
 
 void frame_sampler::worker_loop()
@@ -153,6 +223,27 @@ void frame_sampler::handle_decoded_frame(AVFrame* frame)
 {
   if (!m_callback) return;
   if (frame->width <= 0 || frame->height <= 0) return;
+
+  // The schedule, applied in both modes so that sample_fps means the same thing whichever one is
+  // running -- in full decode it is what makes most decoded frames free, and in keyframe-only it
+  // stops a stream that keys faster than asked from running inference more often than asked.
+  //
+  // Tested before the colour conversion below, which is the expensive part of this function.
+  //
+  // The tolerance matters more than it looks. A camera keying once a second against a one-second
+  // period lands a few milliseconds early as often as late, and a bare `>= period` would reject
+  // every early arrival and halve the rate to one frame every two seconds.
+  const auto now = std::chrono::steady_clock::now();
+  if (m_next_emit.time_since_epoch().count() == 0)
+    m_next_emit = now;  // first frame is always due
+  if (now < m_next_emit - m_emit_period / 10)
+    return;
+  // Advanced from the deadline rather than from this frame, so accepting an early one does not
+  // pull the whole schedule forward with it. Measuring from the last emit instead made every
+  // interval come out a tolerance short, which over a run is a tenth more inference than asked.
+  m_next_emit += m_emit_period;
+  if (m_next_emit < now)
+    m_next_emit = now + m_emit_period;  // fell behind (a stall, a reconnect) -- resync rather than burst
 
   if (!ensure_sws_context(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format)))
     return;
