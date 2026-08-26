@@ -310,8 +310,9 @@ message RateControl {
   optional float max_average_overshoot = 2;
   // Importance at or above this is never softened. Unset keeps 0.95 (face/plate).
   optional float critical_importance = 3;
-  // Declared but not implemented: setting either is refused at open.
+  // Allowed ~1 s peak overshoot as a fraction. Unset → 0.2 (120% of target).
   optional float max_peak_overshoot = 4;
+  // How long an overshoot has to be paid back, in ms. Unset → 1000.
   optional uint32 recovery_window_ms = 5;
 }
 
