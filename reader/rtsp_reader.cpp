@@ -42,10 +42,11 @@ std::string build_rtsp_url_with_auth(const std::string& url,
 }
 
 rtsp_reader::rtsp_reader(
-  const std::string& watch_id, const std::string& user, const std::string& pass)
+  const std::string& watch_id, const std::string& user, const std::string& pass, bool listen)
   : m_watch_id(watch_id)
   , m_user(user)
   , m_password(pass)
+  , m_listen(listen)
 {
 }
 
@@ -73,9 +74,32 @@ bool rtsp_reader::connect()
 
   AVDictionary* opts = nullptr;
   av_dict_set(&opts, "rtsp_transport", "tcp", 0);
-  av_dict_set(&opts, "rtsp_flags", "prefer_tcp", 0);
-  av_dict_set(&opts, "timeout", "5000000", 0);
-  av_dict_set(&opts, "rw_timeout", "5000000", 0);
+  if (m_listen)
+  {
+    // Accept a publish instead of making one, and wait as long as it takes.
+    //
+    // Not a bounded wait retried by the loop below, which is what this was first: a listening
+    // socket that times out is not released for the next attempt, so every retry after the first
+    // failed with the address already in use -- by us -- and the watch never started. One bind for
+    // the lifetime of the watch has no such failure mode, and it also removes the window where a
+    // producer that connects between two attempts is refused.
+    //
+    // Blocking is safe because the interrupt callback below ends the wait when the reader is
+    // stopped; without it a watch could not be removed until something published to it.
+    //
+    // A day rather than the -1 that means "forever": the RTSP layer takes this in seconds and
+    // hands the TCP layer milliseconds, so -1 arrives there as -1000 and is rejected as out of
+    // range. A day is indistinguishable from forever within a session, and the interrupt callback
+    // is what actually ends the wait.
+    av_dict_set(&opts, "rtsp_flags", "listen", 0);
+    av_dict_set(&opts, "listen_timeout", "86400", 0);
+  }
+  else
+  {
+    av_dict_set(&opts, "rtsp_flags", "prefer_tcp", 0);
+    av_dict_set(&opts, "timeout", "5000000", 0);
+    av_dict_set(&opts, "rw_timeout", "5000000", 0);
+  }
 
   // If the stream URL already embeds credentials, honour them and skip the
   // watch-wide ones; otherwise fall back to the watch's user/password.
@@ -86,7 +110,19 @@ bool rtsp_reader::connect()
     av_dict_set(&opts, "user", m_user.c_str(), 0);
     av_dict_set(&opts, "password", m_password.c_str(), 0);
   }
-  AVFormatContext* ctx = nullptr;
+  // Allocated here rather than by avformat_open_input, which is the only way to install an
+  // interrupt callback that is already in place while the open itself blocks -- and in listen
+  // mode the open is exactly what blocks.
+  AVFormatContext* ctx = avformat_alloc_context();
+  if (!ctx)
+  {
+    av_dict_free(&opts);
+    return false;
+  }
+  ctx->interrupt_callback.callback = [](void* opaque) -> int {
+    return static_cast<const rtsp_reader*>(opaque)->m_running ? 0 : 1;
+  };
+  ctx->interrupt_callback.opaque = this;
 
   std::string final_url = url_has_creds
     ? m_rtsp_url

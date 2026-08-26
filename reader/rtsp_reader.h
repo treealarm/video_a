@@ -23,7 +23,13 @@ extern "C" {
 // of ONVIF/VmsCfg/camera models at all.
 class rtsp_reader final : public reader {
 public:
-  rtsp_reader(const std::string& watch_id, const std::string& user, const std::string& pass);
+  /// `listen` makes this an endpoint that is published *to* rather than one that connects out:
+  /// libavformat's RTSP demuxer accepts an incoming publish when asked to (rtsp_flags=listen), so
+  /// no server of our own is needed. The producer then pushes here instead of us reading the same
+  /// stream back out of a media router alongside the operator -- which is what made the operator's
+  /// live view stutter.
+  rtsp_reader(const std::string& watch_id, const std::string& user, const std::string& pass,
+    bool listen = false);
   ~rtsp_reader() override;
 
   bool open(const std::string& url) override;
@@ -53,6 +59,7 @@ private:
   void read_loop();
 
   std::string m_rtsp_url;
+  bool m_listen = false;
   avformat_context_ptr m_ctx = nullptr;
   int m_video_index = -1;
   std::unordered_set<int> m_forward_stream_indexes;

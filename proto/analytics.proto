@@ -44,11 +44,22 @@ message WatchRequest {
   // artifacts). This debug flag additionally attaches crops to PERSON / VEHICLE events —
   // off by default, costs one JPEG encode per detection.
   bool attach_debug_crops = 8;
+  // Wait to be published to instead of connecting out. The worker opens an RTSP endpoint of its
+  // own and answers with its address; whoever produces the stream publishes there.
+  //
+  // This exists because a detector and an operator reading the same high-bitrate path through a
+  // media router is what makes the operator's live view stutter -- the router pushes the same
+  // keyframe burst to both in turn, and the browser misses its frame-assembly window. Being
+  // published to directly takes the detector off that path entirely.
+  bool listen_for_push = 9;
 }
 
 message WatchResponse {
   bool success = 1;
   string message = 2;
+  // Where to publish, when listen_for_push was asked for. Built from the worker's advertised
+  // host and port: only the worker knows the address it is reachable at.
+  string listen_rtsp_url = 3;
 }
 
 message StopWatchRequest {

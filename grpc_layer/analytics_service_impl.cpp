@@ -61,6 +61,11 @@ grpc::Status analytics_service_impl::StartWatch(
   params.min_confidence = request->min_confidence();
   params.sample_fps = request->sample_fps();
   params.attach_debug_crops = request->attach_debug_crops();
+  params.listen_for_push = request->listen_for_push();
+  // In listen mode the caller does not supply a URL: it asks where to publish, and this is the
+  // answer. Overwriting whatever arrived keeps one source of truth for the address -- the worker.
+  if (params.listen_for_push)
+    params.rtsp_url = analytics_bind_url(params.watch_id);
   for (int i = 0; i < request->classes_size(); ++i)
     params.classes.push_back(from_proto(request->classes(i)));
 
@@ -71,6 +76,8 @@ grpc::Status analytics_service_impl::StartWatch(
   const bool ok = m_watches->start_watch(params);
   response->set_success(ok);
   response->set_message(ok ? "ok" : "failed to open rtsp source");
+  if (ok && params.listen_for_push)
+    response->set_listen_rtsp_url(analytics_advertised_url(params.watch_id));
   if (!ok)
     log()->error("StartWatch failed: watch={} rtsp={}", params.watch_id, params.rtsp_url);
   return grpc::Status::OK;

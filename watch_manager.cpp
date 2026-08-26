@@ -1,5 +1,8 @@
 #include "watch_manager.h"
 
+#include <cstdlib>
+#include <unistd.h>
+
 #include "reader/rtsp_reader.h"
 #include "inference/frame_sampler.h"
 #include "inference/inference_worker.h"
@@ -21,6 +24,41 @@ watch_manager::~watch_manager()
     if (entry.reader) entry.reader->stop();
   }
   m_watches.clear();
+}
+
+namespace {
+const char* env_or(const char* name, const char* fallback)
+{
+  const char* raw = std::getenv(name);
+  return (raw && *raw) ? raw : fallback;
+}
+
+/// What this machine calls itself, as the address of last resort.
+///
+/// It is the right answer in both places this runs, which a fixed string is not. Under compose
+/// the container's hostname is the service name its peers resolve; on a developer's machine,
+/// where the producer runs beside the worker rather than in the network next to it, it is the
+/// machine's own name. ANALYTICS_ADVERTISE_HOST overrides it wherever neither holds -- behind a
+/// NAT, say, or when the producer knows the worker by another name.
+std::string own_hostname()
+{
+  char buf[256] = { 0 };
+  if (gethostname(buf, sizeof(buf) - 1) != 0 || buf[0] == '\0')
+    return "localhost";
+  return buf;
+}
+}  // namespace
+
+std::string analytics_bind_url(const std::string& watch_id)
+{
+  return std::string("rtsp://0.0.0.0:") + env_or("ANALYTICS_RTSP_PORT", "8555") + "/" + watch_id;
+}
+
+std::string analytics_advertised_url(const std::string& watch_id)
+{
+  const std::string host = env_or("ANALYTICS_ADVERTISE_HOST", "");
+  return "rtsp://" + (host.empty() ? own_hostname() : host) + ":"
+    + env_or("ANALYTICS_RTSP_PORT", "8555") + "/" + watch_id;
 }
 
 bool watch_manager::start_watch(const watch_params& params)
@@ -58,7 +96,8 @@ bool watch_manager::start_watch(const watch_params& params)
     inference_ptr->submit(frame);
   }, params.sample_fps);
 
-  entry.reader = std::make_shared<rtsp_reader>(params.watch_id, params.cred_user, params.cred_pass);
+  entry.reader = std::make_shared<rtsp_reader>(
+    params.watch_id, params.cred_user, params.cred_pass, params.listen_for_push);
   if (!entry.reader->open(params.rtsp_url))
   {
     log()->error("watch_manager: failed to open watch '{}'", params.watch_id);

@@ -27,7 +27,19 @@ struct watch_params {
   // supply it on the cheap path.
   uint32_t sample_fps = 1;
   bool attach_debug_crops = false;
+  /// Wait to be published to rather than connecting out. `rtsp_url` is then the endpoint this
+  /// worker opens, not one it dials -- see rtsp_reader's listen mode.
+  bool listen_for_push = false;
 };
+
+/// What to bind, and what to tell the caller — deliberately two different strings.
+///
+/// Binding takes 0.0.0.0: the worker accepts the publish on whatever interface it arrives by.
+/// Advertising takes ANALYTICS_ADVERTISE_HOST, because a container cannot work out the name it is
+/// reachable by from outside, and only the worker can answer that question at all -- which camera
+/// belongs to which worker is decided by the caller, but the address is the worker's own fact.
+std::string analytics_bind_url(const std::string& watch_id);
+std::string analytics_advertised_url(const std::string& watch_id);
 
 // Owns the map watch_id -> {rtsp_reader, frame_sampler, pipeline}, thread-safe. Driven entirely
 // by explicit StartWatch/StopWatch calls (see project plan A.3) — video_a never decides on its

@@ -11,6 +11,10 @@ services:
     build: .
     env_file:
       - .env
+    # The port a media server publishes a stream to. Not published to the host: the producer is on
+    # the shared network and reaches the worker by service name.
+    expose:
+      - "${ANALYTICS_RTSP_PORT:-8555}"
     volumes:
       - ./models:/models:ro
 
