@@ -56,6 +56,7 @@ grpc::Status analytics_service_impl::StartWatch(
   watch_params params;
   params.watch_id = request->watch_id();
   params.rtsp_url = request->rtsp_url();
+  params.file_path = request->has_file_path() ? request->file_path() : std::string();
   params.cred_user = request->has_cred_user() ? request->cred_user() : std::string();
   params.cred_pass = request->has_cred_pass() ? request->cred_pass() : std::string();
   params.min_confidence = request->min_confidence();
@@ -69,17 +70,19 @@ grpc::Status analytics_service_impl::StartWatch(
   for (int i = 0; i < request->classes_size(); ++i)
     params.classes.push_back(from_proto(request->classes(i)));
 
-  log()->info("StartWatch [peer={}] watch={} rtsp={} classes={} min_confidence={:.2f} sample_fps={} has_cred={} debug_crops={}",
-    context->peer(), params.watch_id, params.rtsp_url, request->classes_size(),
+  const std::string& source = params.file_path.empty() ? params.rtsp_url : params.file_path;
+
+  log()->info("StartWatch [peer={}] watch={} source={} classes={} min_confidence={:.2f} sample_fps={} has_cred={} debug_crops={}",
+    context->peer(), params.watch_id, source, request->classes_size(),
     params.min_confidence, params.sample_fps, request->has_cred_user(), params.attach_debug_crops);
 
   const bool ok = m_watches->start_watch(params);
   response->set_success(ok);
-  response->set_message(ok ? "ok" : "failed to open rtsp source");
+  response->set_message(ok ? "ok" : "failed to open source");
   if (ok && params.listen_for_push)
     response->set_listen_rtsp_url(analytics_advertised_url(params.watch_id));
   if (!ok)
-    log()->error("StartWatch failed: watch={} rtsp={}", params.watch_id, params.rtsp_url);
+    log()->error("StartWatch failed: watch={} source={}", params.watch_id, source);
   return grpc::Status::OK;
 }
 

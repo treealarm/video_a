@@ -39,6 +39,32 @@ bbox_t to_full_frame(const bbox_t& parent, const bbox_t& child)
     .height = child.height * parent.height,
   };
 }
+
+// How much larger than the vehicle box the crop handed to the plate detector is. The barrier SSD
+// was trained on whole scenes and reads the plate off the car's proportions, so a box cropped
+// exactly to the vehicle takes that away and it finds nothing at all: measured on the OMZ car_1
+// sample, a tight crop scores 0.0 and the same crop with half a box of margin scores 0.98. Anything
+// from a quarter of a box upwards works; half is the middle of that range.
+constexpr float kPlateContextMargin = 0.5f;
+
+// Grow the box by `margin` of its own size on every side, clamped to the frame. Clamping means a
+// vehicle at the edge simply gets less context on that side rather than a box hanging outside the
+// picture.
+bbox_t expand(const bbox_t& box, float margin)
+{
+  const float x0 = std::clamp(box.x - box.width * margin * 0.5f, 0.0f, 1.0f);
+  const float y0 = std::clamp(box.y - box.height * margin * 0.5f, 0.0f, 1.0f);
+  const float x1 = std::clamp(box.x + box.width * (1.0f + margin * 0.5f), 0.0f, 1.0f);
+  const float y1 = std::clamp(box.y + box.height * (1.0f + margin * 0.5f), 0.0f, 1.0f);
+  return bbox_t{ .x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0 };
+}
+
+bool contains_center(const bbox_t& box, const bbox_t& inner)
+{
+  const float cx = inner.x + inner.width * 0.5f;
+  const float cy = inner.y + inner.height * 0.5f;
+  return cx >= box.x && cx <= box.x + box.width && cy >= box.y && cy <= box.y + box.height;
+}
 }
 
 pipeline::pipeline(pipeline_config config, const std::string& model_dir)
@@ -210,10 +236,15 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
 
       if (wants(detection_kind::license_plate))
       {
-        const auto vehicle_crop = crop_region(frame, t.bbox);
+        const auto context_box = expand(t.bbox, kPlateContextMargin);
+        const auto vehicle_crop = crop_region(frame, context_box);
         for (const auto& p : m_plate->infer(vehicle_crop))
         {
           if (p.confidence < m_config.min_confidence) continue;
+          // The margin above also reaches over neighbouring cars, so the same plate can be found
+          // from two tracks. Keep it for the vehicle it actually sits on.
+          const auto full_frame_box = to_full_frame(context_box, p.bbox);
+          if (!contains_center(t.bbox, full_frame_box)) continue;
 
           const auto plate_crop = crop_region(vehicle_crop, p.bbox);
           const auto ocr = m_ocr->infer(plate_crop);
@@ -222,7 +253,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .track_id = t.track_id,
             .kind = detection_kind::license_plate,
             .confidence = p.confidence,
-            .bbox = to_full_frame(t.bbox, p.bbox),
+            .bbox = full_frame_box,
             .detected_at = frame.captured_at,
             .recognized_text = std::nullopt,
             .text_confidence = std::nullopt,

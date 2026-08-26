@@ -1,0 +1,420 @@
+// Canonical source: ta_vms repository, proto/roi_transcode.proto.
+// This is a vendored copy — video_a drives the ROI encoder directly over plain gRPC when it
+// runs an offline pass over a file, with no Dapr and no media router in between.
+// Keep in sync manually; only the RoiStreamTranscode half is used here.
+syntax = "proto3";
+
+package roi.transcode;
+
+// =============================================================================
+// ROI-aware video encoding.
+//
+// The idea in one sentence: a detector says where the interesting things are,
+// and the encoder spends its bits there instead of spreading them evenly.
+//
+// There are two services, and they are separate on purpose:
+//
+//   RoiFileTranscode    a file that already exists is re-encoded in the
+//                       background. Start, then poll.
+//
+//   RoiStreamTranscode  frames are pushed in and packets come back, for a
+//                       caller that has no file to hand over.
+//
+// What is shared between them is the vocabulary of *what to keep sharp* --
+// Box, Mask, RoiQuality. What is not shared is *how to encode*: FileSettings
+// and StreamSettings are separate types even though they look alike today,
+// because the two cases want opposite things from rate control. A file wants a
+// constant quantizer, which is what makes per-region QP offsets independent of
+// each other; a live stream needs a bitrate ceiling the network can carry, and
+// that couples the regions back together. Keeping the types apart means that
+// divergence can be added later without breaking anyone.
+// =============================================================================
+
+
+// =============================================================================
+// Service 1: re-encode a file
+//
+// Start returns as soon as the job is accepted -- it does not wait for the
+// encode. Poll GetJob until state leaves JOB_STATE_RUNNING.
+//
+//     StartFileJob(FileJobRequest) -> Job          { job_id, RUNNING }
+//     GetJob(JobId)                -> Job          { ..., RUNNING }
+//     GetJob(JobId)                -> Job          { ..., COMPLETED }
+//
+// Job state lives in the service's memory: it is lost on restart, and the
+// durable result is the output file. Paths are resolved on the service's own
+// filesystem, so caller and service must share it.
+// =============================================================================
+
+service RoiFileTranscode {
+  rpc StartFileJob (FileJobRequest)  returns (Job);
+  rpc GetJob       (JobId)           returns (Job);
+  // Best effort: a job that has already finished is returned unchanged.
+  rpc CancelJob    (JobId)           returns (Job);
+  rpc ListJobs     (ListJobsRequest) returns (ListJobsResponse);
+}
+
+
+// =============================================================================
+// Service 2: encode a stream of frames
+//
+// One bidirectional stream is one encoding session: it starts when the stream
+// opens and ends when the client half-closes. Nothing is kept between streams,
+// so there is no session to create, look up or clean up.
+//
+//     client                              service
+//     ------                              -------
+//     open  {width, height, settings} -->
+//                                     <-- opened {encoder_used, extradata}
+//     frame {pts, data, boxes|mask}   -->
+//                                     <-- packet {pts, dts, key, data}
+//     frame ...                       -->
+//                                     <-- packet ...
+//     (half-close)                    -->
+//                                     <-- done   {frames, packets, bytes}
+//
+// The first message must be `open` and every message after it must be `frame`.
+// gRPC allows only one message type per stream, so both travel in one envelope
+// with a `oneof` -- the type is fixed by the stream, the shape by the field.
+// Packets do not arrive one-per-frame: an encoder holds frames back before
+// emitting anything.
+// =============================================================================
+
+service RoiStreamTranscode {
+  rpc EncodeStream (stream EncodeStreamRequest) returns (stream EncodeStreamResponse);
+}
+
+
+// =============================================================================
+// Vocabulary: what to keep sharp
+// =============================================================================
+
+// Which backend does the encoding. Says nothing about the codec -- the same
+
+enum Encoder {
+  // Tries Quick Sync, then VA-API, then the CPU, and reports back which one
+  // actually opened. On Intel hardware the difference is worth knowing.
+  ENCODER_AUTO  = 0;
+  ENCODER_QSV   = 1;
+  ENCODER_VAAPI = 2;
+  ENCODER_NVENC = 3;
+  // libx264 or libx265, whichever the codec asks for.
+  ENCODER_CPU   = 4;
+}
+
+// How much time the encoder may spend looking for a better answer.
+//
+// Five steps of ours, not the encoder's own word. Every backend names its presets
+// differently and the lists do not line up -- libx264 has ten, QSV has seven and no
+// "ultrafast" at all, NVENC calls them p1 to p7. This used to be a free-text string, which
+// meant the caller had to know which backend would open before they could name a preset --
+// exactly what ENCODER_AUTO makes unknowable. Note the default: unset is balanced.
+enum Preset {
+  PRESET_BALANCED = 0;
+  PRESET_FASTEST  = 1;
+  PRESET_FAST     = 2;
+  PRESET_SLOW     = 3;
+  PRESET_SLOWEST  = 4;
+}
+
+// What comes out. Note the default: leaving this unset gives HEVC.
+enum Codec {
+  CODEC_H265 = 0;
+  CODEC_H264 = 1;
+  // Encode in whatever the input already is: H.264 stays H.264, HEVC stays HEVC, anything else
+  // becomes H.264. What a transcoding pass wants -- an archive whose clips are stitched into one
+  // HLS playlist cannot have some of them come back in a different codec.
+  //
+  // Not the zero value, which would change what an unset field means for callers already sending
+  // one. Set it explicitly.
+  CODEC_SAME_AS_SOURCE = 2;
+}
+
+// One region worth keeping sharp.
+//
+// Coordinates are normalized 0..1 from the top-left corner, so they survive a
+// change of resolution.
+message Box {
+  // Which sort of thing this is: "license_plate", "vehicle", "person" ... The
+  // name is free-form and is matched against KindQuality.kind; a kind nobody
+  // names simply gets the default treatment.
+  string kind   = 1;
+  float  x      = 2;
+  float  y      = 3;
+  float  width  = 4;
+  float  height = 5;
+
+  // Seconds from the start of the input.
+  //
+  // File jobs only. A file carries one flat list of boxes covering its whole
+  // timeline, so each box has to say when it applies; a streamed frame carries
+  // the boxes that belong to it and needs no timestamp.
+  double t      = 6;
+
+  // What the detector knows about this box beyond where it is. All three come
+  // from the archive already (vms_fs.proto MetadataBox) and used to be dropped
+  // on the way here, which left the encoder with geometry and a class name and
+  // nothing to weigh them by.
+  //
+  // The importance model of TZ v2.0 §11 multiplies five factors, and two of them
+  // are these: confidence directly, and temporal stability -- which is derived
+  // from how long a track persists, so it needs the track to be identifiable
+  // across frames.
+  //
+  // 0 means "not reported". A detector that gives no confidence is not the same
+  // as one reporting zero, and a box with no track is not part of any.
+  int64  track_id   = 7;
+  float  confidence = 8;
+  // The producer's own, narrower word for the class when it has one ("Truck"
+  // under vehicle). Free-form and optional; `kind` is what decides priority.
+  string label      = 9;
+}
+
+// A list of boxes. Exists only because a `oneof` cannot hold a repeated field
+// directly -- see StreamFrame.
+message BoxList {
+  repeated Box boxes = 1;
+}
+
+// An 8-bit importance mask: 0 is background, 255 is maximum quality, and the
+// values between are intermediate levels (see RoiQuality.mask_levels). One mask
+// per frame; several levels of importance are expressed by its *values*, not by
+// sending several masks.
+//
+// It is sampled onto the frame rather than resized, so it may be any
+// resolution -- a mask one eighth of the frame's size is normal and cheap.
+// `data` is tightly packed, one byte per pixel, width * height bytes.
+message Mask {
+  int32 width  = 1;
+  int32 height = 2;
+  bytes data   = 3;
+}
+
+// How much better than the background one kind of region gets.
+message KindQuality {
+  // Matches Box.kind.
+  string kind = 1;
+
+  // Quantizer offset: negative is sharper, positive is coarser. Roughly, -6 is
+  // one visible step better. This is where "the plate must be readable, the car
+  // only recognizable" is expressed: license_plate -12, vehicle -6.
+  //
+  // Optional because 0 is a meaningful answer ("treat it like the background"),
+  // which is not the same as "unset, use the default".
+  optional int32  qp_delta = 2;
+
+  // A halo around the box, as a fraction of the frame, encoded at half the
+  // box's delta. It softens the QP step at the edge, which otherwise reads as a
+  // visible rectangle around the object.
+  optional double pad      = 3;
+}
+
+// Everything about how quality is redistributed. One of these serves both boxes
+// and masks.
+message RoiQuality {
+  // How much worse the background gets. Optional because 0 means "leave the
+  // background alone", which is not the same as "unset".
+  optional int32  background_qp_delta = 1;
+
+  // Per-kind overrides. Boxes only: a mask has no kinds.
+  repeated KindQuality kinds          = 2;
+
+  // How long a box keeps applying around its own moment, in seconds. File jobs
+  // only -- it is what bridges the gap between two detector samples. Optional
+  // for the same reason as above.
+  optional double hold_sec            = 3;
+
+  // Mask input only: the strength a mask value of 255 asks for, and how many
+  // steps the 0..255 range is quantized into. With the defaults (background +6,
+  // mask_qp_delta_at_255 -6, 4 levels) a mask value of 200 lands on -6 and 100
+  // lands on +2. Fewer levels means fewer distinct values and therefore fewer
+  // rectangles to spend the region budget on.
+  optional int32  mask_qp_delta_at_255 = 4;
+  optional int32  mask_levels          = 5;
+
+  // Upper bound on the regions handed to the encoder. mfxExtEncoderROI accepts
+  // at most 256 and a VA-API driver usually far fewer, so regions are sorted
+  // strongest-first and the tail is dropped; how many were dropped is reported
+  // back. 0 takes the built-in default.
+  int32           max_regions          = 6;
+}
+
+// =============================================================================
+// Messages of RoiFileTranscode
+// =============================================================================
+
+message FileSettings {
+  Encoder    encoder = 1;
+  Codec      codec   = 2;
+  // Constant quantizer. Lower is better quality and a bigger file; 0 takes the
+  // built-in default.
+  int32      crf     = 3;
+  // Keyframe interval in frames. 0 means two seconds' worth.
+  int32      gop     = 4;
+  // Encoder speed/quality trade-off. Unset is balanced.
+  Preset     preset  = 5;
+  RoiQuality roi     = 6;
+}
+
+message FileJobRequest {
+  // Absolute paths on the service's filesystem. Both are checked against the
+  // directories the service is allowed to touch.
+  string   input_path  = 1;
+  string   output_path = 2;
+
+  // The boxes to protect, over the whole input's timeline. Each carries its own
+  // Box.t; order does not matter.
+  repeated Box boxes   = 3;
+
+  FileSettings settings = 4;
+
+  // Muxer flags, passed through to the container. Empty leaves the default. A
+  // ta_vms archive clip needs "frag_keyframe+empty_moov+default_base_moof" to
+  // stay playable inside the recording timeline.
+  string   movflags    = 5;
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_RUNNING     = 1;
+  JOB_STATE_COMPLETED   = 2;
+  // Look at Job.message for why.
+  JOB_STATE_FAILED      = 3;
+  JOB_STATE_CANCELLED   = 4;
+}
+
+message Job {
+  string   job_id        = 1;
+  string   input_path    = 2;
+  string   output_path   = 3;
+  JobState state         = 4;
+  int64    start_unix_ms = 5;
+  // Zero while the job is still running.
+  int64    end_unix_ms   = 6;
+  // Why it failed, when it did. Empty otherwise.
+  string   message       = 7;
+  // Which backend actually opened, once it has: "h264_qsv", "libx264" ...
+  // Worth checking -- a silent fall back to the CPU looks like nothing more
+  // than a slow job.
+  string   encoder_used  = 8;
+}
+
+message JobId { string job_id = 1; }
+
+message ListJobsRequest {}
+
+message ListJobsResponse { repeated Job jobs = 1; }
+
+// =============================================================================
+// Messages of RoiStreamTranscode
+// =============================================================================
+
+// What the caller feeds in.
+enum InputCodec {
+  // Tightly packed planes in the pixel format named by StreamOpen.pix_fmt.
+  INPUT_CODEC_RAW  = 0;
+  INPUT_CODEC_H264 = 1;
+  INPUT_CODEC_H265 = 2;
+  INPUT_CODEC_JPEG = 3;
+}
+
+// Identical to FileSettings today. Kept separate so that what a live stream
+// needs and a file does not -- a bitrate target and a buffer model -- can be
+// added here without touching the file contract.
+message StreamSettings {
+  Encoder    encoder = 1;
+  Codec      codec   = 2;
+  int32      crf     = 3;
+  int32      gop     = 4;
+  Preset     preset  = 5;
+  RoiQuality roi     = 6;
+}
+
+// The first message of the stream. Describes everything that cannot change
+// once encoding has started.
+message StreamOpen {
+  int32      width          = 1;
+  int32      height         = 2;
+
+  // The units StreamFrame.pts is counted in: pts * num / den = seconds. For
+  // milliseconds, 1/1000.
+  int32      time_base_num  = 3;
+  int32      time_base_den  = 4;
+
+  // Nominal frame rate. Only sets the encoder's rate and the default GOP; it
+  // does not have to match how fast frames actually arrive.
+  int32      fps_num        = 5;
+  int32      fps_den        = 6;
+
+  InputCodec codec          = 7;
+  // Decoder configuration for AVCC/HVCC input. Empty for Annex-B and for raw
+  // frames.
+  bytes      extradata      = 8;
+  // AVPixelFormat value. Raw input only.
+  int32      pix_fmt        = 9;
+
+  StreamSettings settings   = 10;
+
+  // Optional: mux the encoded packets into this file instead of streaming them
+  // back. Same filesystem restrictions as a file job. When set, `movflags`
+  // applies and no Packet messages are sent.
+  string     output_path    = 11;
+  string     movflags       = 12;
+}
+
+// One frame on its way in.
+message StreamFrame {
+  // In the time base declared at open. Must not go backwards.
+  int64 pts  = 1;
+  // Tightly packed planes, or exactly one encoded access unit.
+  bytes data = 2;
+
+  // What to keep sharp in this frame. A frame may carry neither, in which case
+  // only the background treatment applies.
+  oneof regions {
+    Mask    mask  = 3;
+    BoxList boxes = 4;
+  }
+}
+
+message EncodeStreamRequest {
+  oneof msg {
+    StreamOpen  open  = 1;
+    StreamFrame frame = 2;
+  }
+}
+
+// Sent once, before any packet.
+message Opened {
+  Encoder encoder_used = 1;
+  // Human-readable form of the same thing: "h264_qsv", "libx264" ...
+  string  encoder_name = 2;
+  // Decoder configuration for the *output*. A remote consumer needs it to
+  // decode the packets that follow.
+  bytes   extradata    = 3;
+}
+
+message Packet {
+  int64 pts  = 1;
+  int64 dts  = 2;
+  bool  key  = 3;
+  bytes data = 4;
+}
+
+// Sent once, after the last packet.
+message Done {
+  int64 frames          = 1;
+  int64 packets         = 2;
+  int64 bytes           = 3;
+  // Regions that did not fit the encoder's budget; see RoiQuality.max_regions.
+  // Non-zero means some of what was asked for was not applied.
+  int64 regions_dropped = 4;
+}
+
+message EncodeStreamResponse {
+  oneof msg {
+    Opened opened = 1;
+    Packet packet = 2;
+    Done   done   = 3;
+  }
+}

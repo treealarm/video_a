@@ -19,6 +19,9 @@ pkg_check_modules(FFMPEG REQUIRED
 )
 
 set(ANALYTICS_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/analytics.proto)
+# ta_vms' contract, vendored. Only the client half is generated here — this repository never
+# serves it, it drives it for the offline ROI pass.
+set(ROI_TRANSCODE_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/roi_transcode.proto)
 
 set(SOURCES
     main.cpp
@@ -39,8 +42,15 @@ set(SOURCES
     interfaces/sink_container.h
     interfaces/reader.h
 
+    reader/file_reader.cpp
+    reader/file_reader.h
     reader/rtsp_reader.cpp
     reader/rtsp_reader.h
+
+    roi/roi_file_job.cpp
+    roi/roi_file_job.h
+    roi/roi_stream_client.cpp
+    roi/roi_stream_client.h
 
     sink_container/sink_container_impl.cpp
     sink_container/sink_container_impl.h
@@ -79,6 +89,21 @@ protobuf_generate(
     LANGUAGE grpc
     IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
     PROTOS ${ANALYTICS_PROTO_FILE}
+    PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+    GENERATE_EXTENSIONS .grpc.pb.cc .grpc.pb.h
+)
+
+protobuf_generate(
+    TARGET analytics-worker
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
+    PROTOS ${ROI_TRANSCODE_PROTO_FILE}
+)
+
+protobuf_generate(
+    TARGET analytics-worker
+    LANGUAGE grpc
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
+    PROTOS ${ROI_TRANSCODE_PROTO_FILE}
     PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
     GENERATE_EXTENSIONS .grpc.pb.cc .grpc.pb.h
 )

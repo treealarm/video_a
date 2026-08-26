@@ -28,9 +28,11 @@ Requires these environment variables (see `.env`):
 - `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector.xml/.bin` (or `.onnx`),
   `face_detector.xml/.bin`, `plate_detector.xml/.bin`, `plate_ocr.xml/.bin`,
   `person_embedder.xml/.bin` (OpenVINO IR pairs). `primary_detector` (person/vehicle,
-  YOLOv11-style), `face_detector` (OMZ face-detection-0205) and `person_embedder` (body re-id,
-  e.g. OSNet 512-d) are wired in; `plate_detector`/`plate_ocr` are still stubs that return empty
-  results. A missing model file puts that detector into stub mode with a startup warning.
+  YOLOv11-style), `face_detector` (OMZ face-detection-0205), `plate_detector` (OMZ
+  vehicle-license-plate-detection-barrier-0106) and `person_embedder` (body re-id, e.g. OSNet
+  512-d) are wired in; `plate_ocr` is still a stub that returns empty results, so plates are
+  located but not read. A missing model file puts that detector into stub mode with a startup
+  warning.
 - `ANALYTICS_DEVICE` — OpenVINO device selection (`CPU`/`GPU`).
 - `ANALYTICS_REID_EMBED_INTERVAL_SEC` — how often (seconds, `1`..`86400`) a still-live person track
   recomputes its body re-id embedding. The embedding is computed on the track's first frame and
@@ -39,6 +41,38 @@ Requires these environment variables (see `.env`):
 - `ANALYTICS_STUB_SYNTHETIC_DETECTIONS` — optional, dev/test-only. When `true`, periodically emits
   one synthetic `PERSON` detection so the whole pipeline (RTSP → decode → tracker → gRPC stream)
   is exercisable end-to-end without real models.
+
+## Watching a file
+
+`WatchRequest.file_path` names a file to read instead of `rtsp_url`. It is read at its own
+timestamps and looped, so everything downstream — the sampler's keyframe-interval measurement most
+of all — sees the shape of input it sees from a camera, and a short clip stands in for a
+continuous source. Everything else about the watch is unchanged: same classes, same
+`sample_fps`, same `StreamDetections`.
+
+## Offline ROI pass (`--roi-file`)
+
+A second entry point, selected by the flag and otherwise not reachable: decode a file, detect what
+is in it, and push every frame with its regions to ta_vms' ROI encoder over plain gRPC (no Dapr).
+The encoder muxes the result; this side writes a `*.boxes.json` beside it that
+`roi_transcode/integration/scripts/boxes-to-ass.py` turns into subtitles for a player.
+
+```bash
+analytics-worker --roi-file clip.mp4 --roi-grpc 127.0.0.1:50061 \
+    --encoder vaapi --codec h264 --crf 30 \
+    --background-qp 8 --qp face=-10 --qp license_plate=-12 --pad 0.02
+analytics-worker --help    # the rest of the knobs
+```
+
+`roi_transcode/integration/scripts/roi-clip.sh` runs this together with the encoder service and a
+player, which is usually what you want.
+
+Two things it does differently from a watch. It does **not** go through `frame_sampler`: that
+sheds packets under load, which is right for a live source and wrong for a transcode, so this path
+decodes inline on the reader's thread and lets the encoder back-pressure it. And detection stays
+sampled (`--detect-fps`) while decoding does not — frames between detection passes carry the
+previous regions forward, measured against the file's own timeline so a run is reproducible
+whatever the machine's speed.
 
 ## Docker
 
@@ -65,8 +99,19 @@ note:** `models/primary_detector.*` is a YOLOv11n export and Ultralytics YOLOv11
 baking it into a distributed/deployed image is a deliberate, not-yet-fully-reconciled call (see
 `ta_install/README.md`'s "Analytics models" section). `models/` itself is gitignored; regenerate
 `primary_detector.xml/.bin` with `pip install ultralytics && python -c "from ultralytics import
-YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"` and `face_detector.xml/.bin` from
-OMZ face-detection-0205 (Apache-2.0).
+YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"`, and fetch the two OMZ models
+(Apache-2.0) straight from the release storage, renaming each pair to the name the loader looks
+for:
+
+```sh
+OMZ=https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1
+for ext in xml bin; do
+  curl -sSLo "models/face_detector.$ext" \
+    "$OMZ/face-detection-0205/FP32/face-detection-0205.$ext"
+  curl -sSLo "models/plate_detector.$ext" \
+    "$OMZ/vehicle-license-plate-detection-barrier-0106/FP32/vehicle-license-plate-detection-barrier-0106.$ext"
+done
+```
 
 Linking note: `openvino::openvino_intel_cpu_plugin` must be linked with `--whole-archive`
 (see `CMakeLists.txt`) — without it, the static CPU plugin silently drops object files for less

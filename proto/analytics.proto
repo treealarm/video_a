@@ -52,6 +52,14 @@ message WatchRequest {
   // keyframe burst to both in turn, and the browser misses its frame-assembly window. Being
   // published to directly takes the detector off that path entirely.
   bool listen_for_push = 9;
+  // Read this file instead of a stream. An absolute path on the worker's own filesystem; the
+  // watch then behaves exactly as it does on RTSP, paced to the file's own timestamps, and
+  // restarts at the end so a short clip stands in for a continuous source.
+  //
+  // Set instead of rtsp_url, not alongside it: a watch has one source. It exists so footage on
+  // disk can drive the detector without a media router in between -- which is what makes an
+  // offline pass over a clip possible at all.
+  optional string file_path = 10;
 }
 
 message WatchResponse {

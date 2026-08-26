@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <unistd.h>
 
+#include "reader/file_reader.h"
 #include "reader/rtsp_reader.h"
 #include "inference/frame_sampler.h"
 #include "inference/inference_worker.h"
@@ -21,7 +22,7 @@ watch_manager::~watch_manager()
   std::scoped_lock lock(m_mutex);
   for (auto& [id, entry] : m_watches)
   {
-    if (entry.reader) entry.reader->stop();
+    if (entry.source) entry.source->stop();
   }
   m_watches.clear();
 }
@@ -96,19 +97,33 @@ bool watch_manager::start_watch(const watch_params& params)
     inference_ptr->submit(frame);
   }, params.sample_fps);
 
-  entry.reader = std::make_shared<rtsp_reader>(
-    params.watch_id, params.cred_user, params.cred_pass, params.listen_for_push);
-  if (!entry.reader->open(params.rtsp_url))
+  // Stage 1: whichever source this watch names. A file is read at its own timestamps and looped,
+  // so that everything downstream — the sampler's rate measurement above all — sees the same shape
+  // of input it sees from a camera, and a clip that ends does not silently end the watch.
+  const bool from_file = !params.file_path.empty();
+  const std::string& source_name = from_file ? params.file_path : params.rtsp_url;
+  if (from_file)
+  {
+    entry.source = std::make_shared<file_reader>(
+      params.watch_id, /*loop=*/true, /*realtime=*/true);
+  }
+  else
+  {
+    entry.source = std::make_shared<rtsp_reader>(
+      params.watch_id, params.cred_user, params.cred_pass, params.listen_for_push);
+  }
+
+  if (!entry.source->open(source_name))
   {
     log()->error("watch_manager: failed to open watch '{}'", params.watch_id);
     return false;
   }
 
-  entry.reader->add_sink(entry.sampler);
-  entry.reader->start();
+  entry.source->add_sink(entry.sampler);
+  entry.source->start();
 
   m_watches[params.watch_id] = std::move(entry);
-  log()->info("watch_manager: started watch '{}' -> {}", params.watch_id, params.rtsp_url);
+  log()->info("watch_manager: started watch '{}' -> {}", params.watch_id, source_name);
   return true;
 }
 
@@ -123,8 +138,8 @@ void watch_manager::stop_watch_locked(const std::string& watch_id)
   auto it = m_watches.find(watch_id);
   if (it == m_watches.end()) return;
 
-  if (it->second.reader)
-    it->second.reader->stop();
+  if (it->second.source)
+    it->second.source->stop();
 
   m_watches.erase(it);
   log()->info("watch_manager: stopped watch '{}'", watch_id);

@@ -10,7 +10,7 @@
 
 #include "inference/detection.h"
 
-class rtsp_reader;
+class reader;
 class pipeline;
 class frame_sampler;
 class inference_worker;
@@ -18,6 +18,9 @@ class inference_worker;
 struct watch_params {
   std::string watch_id;
   std::string rtsp_url;
+  /// Read this file rather than a stream. Mutually exclusive with rtsp_url — when set it is what
+  /// the watch opens, and the credentials and listen mode below do not apply.
+  std::string file_path;
   std::string cred_user;
   std::string cred_pass;
   std::vector<detection_kind> classes;
@@ -65,7 +68,7 @@ private:
     std::unique_ptr<pipeline> pipeline_instance;
     std::shared_ptr<inference_worker> inference;
     std::shared_ptr<frame_sampler> sampler;
-    std::shared_ptr<rtsp_reader> reader;
+    std::shared_ptr<::reader> source;
   };
 
   void stop_watch_locked(const std::string& watch_id);
