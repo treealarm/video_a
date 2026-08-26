@@ -125,14 +125,14 @@ bool roi_stream_client::open(const roi_encode_settings& settings, int32_t width,
     q->set_pad(settings.pad);
   if (settings.has_max_protected_fraction)
     q->set_max_protected_fraction(settings.max_protected_fraction);
-  if (settings.has_qp_at_zero || settings.has_qp_at_one)
-  {
-    auto* imp = q->mutable_importance();
-    if (settings.has_qp_at_zero)
-      imp->set_qp_at_zero(settings.qp_at_zero);
-    if (settings.has_qp_at_one)
-      imp->set_qp_at_one(settings.qp_at_one);
-  }
+  if (settings.margin_mode == "fraction")
+    q->set_margin_mode(rt::MARGIN_MODE_FRACTION_OF_FRAME);
+  else if (settings.margin_mode == "fixed" || !settings.margin_mode.empty())
+    q->set_margin_mode(rt::MARGIN_MODE_FIXED_PIXELS);
+  if (settings.has_margin_px)
+    q->set_margin_px(settings.margin_px);
+  if (settings.has_min_roi_side)
+    q->set_min_roi_side(settings.min_roi_side);
   for (const auto& k : settings.kinds)
   {
     auto* kq = q->add_kinds();
@@ -140,6 +140,12 @@ bool roi_stream_client::open(const roi_encode_settings& settings, int32_t width,
     kq->set_qp_delta(k.qp_delta);
     if (k.pad > 0)
       kq->set_pad(k.pad);
+  }
+
+  if (settings.has_max_qp_delta_per_frame)
+  {
+    auto* t = s->mutable_temporal_roi();
+    t->set_max_qp_delta_per_frame(settings.max_qp_delta_per_frame);
   }
 
   if (settings.target_bitrate > 0)

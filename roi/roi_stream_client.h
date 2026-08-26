@@ -44,15 +44,20 @@ struct roi_encode_settings {
   bool has_background_qp_delta = false;
   int32_t background_qp_delta = 0;
 
-  /// Halo for the importance path (no per-kind rows). 0 means "leave the service default".
+  /// Halo for boxes without a KindQuality row. 0 means "leave the service default".
   double pad = 0;
 
-  /// Ends of the §11 importance→QP line. Unset keeps the library defaults (−10 / −4 for
-  /// plate / vehicle). The product point "plate −12, vehicle −6" is zero=3, one=-12.
-  bool has_qp_at_zero = false;
-  int32_t qp_at_zero = 0;
-  bool has_qp_at_one = false;
-  int32_t qp_at_one = 0;
+  /// v3 geometry. Unset keeps the service / library defaults (FixedPixels, 8, 64).
+  bool has_margin_px = false;
+  int32_t margin_px = 8;
+  bool has_min_roi_side = false;
+  int32_t min_roi_side = 64;
+  /// "fixed" (default) or "fraction".
+  std::string margin_mode;
+
+  /// QP slew (§13). 0 leaves the service default (off).
+  bool has_max_qp_delta_per_frame = false;
+  int32_t max_qp_delta_per_frame = 0;
 
   bool has_max_protected_fraction = false;
   float max_protected_fraction = 0;

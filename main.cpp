@@ -80,11 +80,12 @@ void print_roi_usage()
     "  --crf N                constant quantizer (encoder's own default)\n"
     "  --gop N                keyframe interval in frames (same as the source)\n"
     "  --background-qp N      how much worse the background gets, e.g. 6\n"
-    "  --qp KIND=DELTA        per-kind override; omit to let §11 importance decide\n"
-    "  --qp-at-zero N         importance→QP line at I=0 (default 5; product 3)\n"
-    "  --qp-at-one N          importance→QP line at I=1 (default -10; product -12)\n"
-    "  --pad F                halo around each box as a fraction of the frame, e.g. 0.02\n"
-    "  --target-bitrate N     §15 average bitrate ceiling in bits/sec (0 = CQP/CRF only)\n"
+    "  --qp KIND=DELTA        per-kind QP override; omit to use the v3 ObjectPriority ladder\n"
+    "  --pad F                soft rim as a fraction of the frame (halo), e.g. 0.02\n"
+    "  --margin-px N          expand each box by N pixels (v3 default on the service: 8)\n"
+    "  --min-roi-side N       expand boxes shorter than N on a side (service default: 64)\n"
+    "  --max-qp-delta-per-frame N  limit QP jumps between frames (0 = off)\n"
+    "  --target-bitrate N     outer-loop average bitrate ceiling in bits/sec (0 = CQP/CRF only)\n"
     "  --bitrate-overshoot F  allowed average overshoot fraction, e.g. 0.1\n"
     "  --max-regions N        upper bound on regions handed to the encoder\n"
     "  --regions boxes|mask   how the regions travel; a mask costs no region budget, which\n"
@@ -203,17 +204,23 @@ int run_roi_cli(const std::vector<std::string>& args)
       }
       qp_overrides.emplace_back(v->substr(0, eq), std::stoi(v->substr(eq + 1)));
     }
-    else if (a == "--qp-at-zero")
+    else if (a == "--margin-px")
     {
       if (!(v = need_value(i))) return 2;
-      cfg.encode.qp_at_zero = std::stoi(*v);
-      cfg.encode.has_qp_at_zero = true;
+      cfg.encode.margin_px = std::stoi(*v);
+      cfg.encode.has_margin_px = true;
     }
-    else if (a == "--qp-at-one")
+    else if (a == "--min-roi-side")
     {
       if (!(v = need_value(i))) return 2;
-      cfg.encode.qp_at_one = std::stoi(*v);
-      cfg.encode.has_qp_at_one = true;
+      cfg.encode.min_roi_side = std::stoi(*v);
+      cfg.encode.has_min_roi_side = true;
+    }
+    else if (a == "--max-qp-delta-per-frame")
+    {
+      if (!(v = need_value(i))) return 2;
+      cfg.encode.max_qp_delta_per_frame = std::stoi(*v);
+      cfg.encode.has_max_qp_delta_per_frame = true;
     }
     else if (a == "--target-bitrate")
     {

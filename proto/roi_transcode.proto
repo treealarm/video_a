@@ -134,10 +134,14 @@ enum Codec {
 //
 // Coordinates are normalized 0..1 from the top-left corner, so they survive a
 // change of resolution.
+//
+// Priority on the wire is TZ v3 ObjectPriority. Resolution order on the service:
+// KindQuality for this kind (if any) → desired_qp_delta → priority → kind/confidence
+// mapped onto the ladder. Leaving priority unset asks for the last of those.
 message Box {
   // Which sort of thing this is: "license_plate", "vehicle", "person" ... The
   // name is free-form and is matched against KindQuality.kind; a kind nobody
-  // names simply gets the default treatment.
+  // names is weighed by the class tables instead.
   string kind   = 1;
   float  x      = 2;
   float  y      = 3;
@@ -151,28 +155,35 @@ message Box {
   // the boxes that belong to it and needs no timestamp.
   double t      = 6;
 
-  // What the detector knows about this box beyond where it is. All three come
-  // from the archive already (vms_fs.proto MetadataBox) and used to be dropped
-  // on the way here, which left the encoder with geometry and a class name and
-  // nothing to weigh them by.
-  //
-  // The importance model of TZ v2.0 §11 multiplies five factors, and two of them
-  // are these: confidence directly, and temporal stability -- which is derived
-  // from how long a track persists, so it needs the track to be identifiable
-  // across frames.
-  //
-  // 0 means "not reported". A detector that gives no confidence is not the same
-  // as one reporting zero, and a box with no track is not part of any.
+  // Detector evidence used when `priority` is unset: confidence feeds the class
+  // weighting, track_id ties frames together for temporal hold / QP slew.
+  // 0 means "not reported".
   int64  track_id   = 7;
   float  confidence = 8;
   // The producer's own, narrower word for the class when it has one ("Truck"
-  // under vehicle). Free-form and optional; `kind` is what decides priority.
+  // under vehicle). Free-form; `kind` is what decides class weighting.
   string label      = 9;
 
   // Optional outline in the same normalized coordinates. When at least three points are
   // set the encoder protects the polygon rather than the axis-aligned box; x/y/width/height
   // remain as the AABB fallback for overlays and the area budget.
   repeated Point polygon = 10;
+
+  // Explicit v3 ladder step. Unset → derive from kind/confidence (or KindQuality).
+  optional ObjectPriority priority = 11;
+
+  // Rare override of the ladder's QP delta for this one box.
+  optional int32 desired_qp_delta = 12;
+}
+
+// TZ v3 §11.1. Numbers match the library enum; BACKGROUND is a real step (QP 0 on
+// the object -- the frame-wide background penalty lives on RoiQuality).
+enum ObjectPriority {
+  OBJECT_PRIORITY_BACKGROUND = 0;
+  OBJECT_PRIORITY_LOW        = 1;
+  OBJECT_PRIORITY_NORMAL     = 2;
+  OBJECT_PRIORITY_HIGH       = 3;
+  OBJECT_PRIORITY_CRITICAL   = 4;
 }
 
 message Point {
@@ -200,38 +211,43 @@ message Mask {
   bytes data   = 3;
 }
 
-// How much better than the background one kind of region gets.
+// How much better than the background one kind of region gets -- an explicit
+// override of the ObjectPriority ladder for that class name.
 message KindQuality {
   // Matches Box.kind.
   string kind = 1;
 
-  // Quantizer offset: negative is sharper, positive is coarser. Roughly, -6 is
-  // one visible step better. This is where "the plate must be readable, the car
-  // only recognizable" is expressed: license_plate -12, vehicle -6.
-  //
+  // Quantizer offset: negative is sharper, positive is coarser.
   // Optional because 0 is a meaningful answer ("treat it like the background"),
   // which is not the same as "unset, use the default".
   optional int32  qp_delta = 2;
 
-  // A halo around the box, as a fraction of the frame, encoded at half the
-  // box's delta. It softens the QP step at the edge, which otherwise reads as a
-  // visible rectangle around the object.
+  // Soft rim around the box as a fraction of the frame (half the body's delta).
+  // Independent of RoiQuality.margin_* which grows the protected body.
   optional double pad      = 3;
 }
 
+// How the margin around a box is measured -- TZ v3 §11.3.
+// Zero value is the v3 default (fixed pixels), so an unset field matches the library.
+enum MarginMode {
+  MARGIN_MODE_FIXED_PIXELS      = 0;
+  MARGIN_MODE_FRACTION_OF_FRAME = 1;
+}
+
 // Everything about how quality is redistributed. One of these serves both boxes
-// and masks.
+// and masks. The public quality model is the ObjectPriority ladder; class tables
+// only decide which step a box lands on when Box.priority is unset.
 message RoiQuality {
   // How much worse the background gets. Optional because 0 means "leave the
   // background alone", which is not the same as "unset".
   optional int32  background_qp_delta = 1;
 
-  // Per-kind overrides. Boxes only: a mask has no kinds.
+  // Per-kind QP overrides. Boxes only: a mask has no kinds.
   repeated KindQuality kinds          = 2;
 
   // How long a box keeps applying around its own moment, in seconds. File jobs
-  // only -- it is what bridges the gap between two detector samples. Optional
-  // for the same reason as above.
+  // only -- bridges the gap between two detector samples when TemporalRoiConfig
+  // is not doing the longer hold. Optional for the same reason as above.
   optional double hold_sec            = 3;
 
   // Mask input only: the strength a mask value of 255 asks for, and how many
@@ -248,39 +264,50 @@ message RoiQuality {
   // back. 0 takes the built-in default.
   int32           max_regions          = 6;
 
-  // Halo around every box whose kind is not in `kinds`, as a fraction of the frame.
-  // The importance path has no per-kind row to hang a pad on, so this is where it lives.
+  // Soft rim when a kind is not in `kinds`, as a fraction of the frame.
   optional double pad                  = 7;
 
-  // §11. What a region is worth when `kinds` does not name it. Leaving this unset keeps
-  // the library defaults (the §12 line: plate −10, vehicle −4). The product point
-  // "plate −12, vehicle −6" is qp_at_zero=3, qp_at_one=-12 on the same slope.
-  optional ImportancePolicy importance = 8;
+  // Optional overrides of the built-in kind→weight tables used to pick a ladder
+  // step when Box.priority is unset. Not an importance→QP line -- that line is gone.
+  optional ClassWeighting class_weighting = 8;
 
-  // How much of the frame may be protected before importance decides who misses out.
+  // How much of the frame may be protected before priority decides who misses out.
   // 0 disables the budget. Unset keeps the library default (a quarter of the frame).
   optional float  max_protected_fraction = 9;
+
+  // §11.3 / §11.2. Unset margin_mode is FIXED_PIXELS; unset margin_px / min_roi_side
+  // keep the library defaults (8 px, 64 px).
+  MarginMode      margin_mode   = 10;
+  optional int32  margin_px     = 11;
+  optional int32  min_roi_side  = 12;
 }
 
-// The importance model of TZ §11, as a wire setting. Semantic and task tables are sparse:
-// only the kinds you name are overridden; everything else keeps the built-in table.
-message ImportancePolicy {
+// Sparse overrides of the built-in class tables that feed ObjectPriority when a
+// box does not set priority itself. Only the kinds you name are overridden.
+message ClassWeighting {
   map<string, float> semantic_priority = 1;
   map<string, float> task_priority     = 2;
   optional float unknown_priority      = 3;
   optional float assumed_confidence    = 4;
   optional bool  weigh_confidence_on_known_classes = 5;
-  // Ends of the importance→QP line. See smartvideo::ImportancePolicy.
-  optional int32 qp_at_zero            = 6;
-  optional int32 qp_at_one             = 7;
 
-  // TemporalStability: brand-new track floor and rise time (seconds) toward 1.0.
-  optional float temporal_stability_floor    = 8;
-  optional float temporal_stability_tau_sec  = 9;
-  // MotionWeight is optional in §11. Off unless use_motion_weight is true.
-  optional bool  use_motion_weight           = 10;
-  optional float motion_weight_floor         = 11;
-  optional float motion_speed_at_full        = 12;
+  // Track age → weight toward a higher step. Brand-new track floor and rise time.
+  optional float temporal_stability_floor    = 6;
+  optional float temporal_stability_tau_sec  = 7;
+  // Motion weight is opt-in; off unless use_motion_weight is true.
+  optional bool  use_motion_weight           = 8;
+  optional float motion_weight_floor         = 9;
+  optional float motion_speed_at_full        = 10;
+}
+
+// §13 -- only fields the service actually implements. Smoothing and track
+// prediction are not declared: a rejected setting is worse than an absent one.
+message TemporalRoiConfig {
+  optional uint32 max_missing_frames      = 1;
+  optional double max_hold_sec            = 2;
+  optional float  confidence_decay        = 3;
+  // Ceiling on how fast a region's QP may move between frames. 0 leaves it off.
+  optional int32  max_qp_delta_per_frame  = 4;
 }
 
 // =============================================================================
@@ -298,9 +325,10 @@ message FileSettings {
   // Encoder speed/quality trade-off. Unset is balanced.
   Preset     preset  = 5;
   RoiQuality roi     = 6;
-  // §15 outer bitrate loop. Optional on file jobs for offline calibration against a
-  // target average; the live path is what it was designed for (see StreamSettings).
+  // Outer bitrate loop over CQP/CRF -- not native encoder VBR/VBV. Optional on
+  // file jobs for offline calibration against a target average.
   RateControl rate_control = 7;
+  TemporalRoiConfig temporal_roi = 8;
 }
 
 message RateControl {
@@ -378,8 +406,9 @@ enum InputCodec {
   INPUT_CODEC_JPEG = 3;
 }
 
-// Identical to FileSettings today for the shared knobs. Bitrate ceiling and buffer
-// model live here as RateControl -- that is why the type was kept separate.
+// Identical to FileSettings today for the shared knobs. Bitrate ceiling lives
+// here as RateControl (outer loop, not native VBR) -- that is why the type was
+// kept separate from FileSettings.
 message StreamSettings {
   Encoder    encoder = 1;
   Codec      codec   = 2;
@@ -388,6 +417,7 @@ message StreamSettings {
   Preset     preset  = 5;
   RoiQuality roi     = 6;
   RateControl rate_control = 7;
+  TemporalRoiConfig temporal_roi = 8;
 }
 
 // The first message of the stream. Describes everything that cannot change
