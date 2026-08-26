@@ -168,6 +168,16 @@ message Box {
   // The producer's own, narrower word for the class when it has one ("Truck"
   // under vehicle). Free-form and optional; `kind` is what decides priority.
   string label      = 9;
+
+  // Optional outline in the same normalized coordinates. When at least three points are
+  // set the encoder protects the polygon rather than the axis-aligned box; x/y/width/height
+  // remain as the AABB fallback for overlays and the area budget.
+  repeated Point polygon = 10;
+}
+
+message Point {
+  float x = 1;
+  float y = 2;
 }
 
 // A list of boxes. Exists only because a `oneof` cannot hold a repeated field

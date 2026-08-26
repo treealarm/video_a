@@ -181,6 +181,12 @@ bool roi_stream_client::send_frame(int64_t pts, const uint8_t* data, size_t size
       if (b.track_id > 0)
         out->set_track_id(b.track_id);
       out->set_confidence(b.confidence);
+      for (const auto& p : b.polygon)
+      {
+        auto* pt = out->add_polygon();
+        pt->set_x(p.x);
+        pt->set_y(p.y);
+      }
     }
   }
 

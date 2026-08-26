@@ -61,6 +61,11 @@ struct roi_encode_settings {
 };
 
 /// One region of one frame, normalized 0..1 from the top-left corner.
+struct roi_point {
+  float x = 0;
+  float y = 0;
+};
+
 struct roi_box {
   std::string kind;
   float x = 0;
@@ -69,6 +74,8 @@ struct roi_box {
   float height = 0;
   int64_t track_id = 0;
   float confidence = 0;
+  /// Optional outline (normalized). When size >= 3 the encoder protects the polygon.
+  std::vector<roi_point> polygon;
 };
 
 struct roi_encode_report {
