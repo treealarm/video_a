@@ -84,6 +84,8 @@ void print_roi_usage()
     "  --qp-at-zero N         importance→QP line at I=0 (default 5; product 3)\n"
     "  --qp-at-one N          importance→QP line at I=1 (default -10; product -12)\n"
     "  --pad F                halo around each box as a fraction of the frame, e.g. 0.02\n"
+    "  --target-bitrate N     §15 average bitrate ceiling in bits/sec (0 = CQP/CRF only)\n"
+    "  --bitrate-overshoot F  allowed average overshoot fraction, e.g. 0.1\n"
     "  --max-regions N        upper bound on regions handed to the encoder\n"
     "  --regions boxes|mask   how the regions travel; a mask costs no region budget, which\n"
     "                         matters on a driver that accepts only a handful (boxes)\n"
@@ -212,6 +214,16 @@ int run_roi_cli(const std::vector<std::string>& args)
       if (!(v = need_value(i))) return 2;
       cfg.encode.qp_at_one = std::stoi(*v);
       cfg.encode.has_qp_at_one = true;
+    }
+    else if (a == "--target-bitrate")
+    {
+      if (!(v = need_value(i))) return 2;
+      cfg.encode.target_bitrate = static_cast<uint64_t>(std::stoull(*v));
+    }
+    else if (a == "--bitrate-overshoot")
+    {
+      if (!(v = need_value(i))) return 2;
+      cfg.encode.max_average_overshoot = std::stof(*v);
     }
     else if (a == "--help" || a == "-h") { print_roi_usage(); return 0; }
     else

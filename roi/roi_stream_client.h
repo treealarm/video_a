@@ -57,6 +57,13 @@ struct roi_encode_settings {
   bool has_max_protected_fraction = false;
   float max_protected_fraction = 0;
 
+  /// §15 outer bitrate loop. 0 leaves CQP/CRF alone. Bits per second.
+  uint64_t target_bitrate = 0;
+  /// 0 means "library default deadband" once a target is set.
+  float max_average_overshoot = 0;
+  float critical_importance = 0;
+  bool has_critical_importance = false;
+
   std::vector<roi_kind_quality> kinds;
 };
 

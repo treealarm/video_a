@@ -142,6 +142,16 @@ bool roi_stream_client::open(const roi_encode_settings& settings, int32_t width,
       kq->set_pad(k.pad);
   }
 
+  if (settings.target_bitrate > 0)
+  {
+    auto* rc = s->mutable_rate_control();
+    rc->set_target_bitrate(settings.target_bitrate);
+    if (settings.max_average_overshoot > 0)
+      rc->set_max_average_overshoot(settings.max_average_overshoot);
+    if (settings.has_critical_importance)
+      rc->set_critical_importance(settings.critical_importance);
+  }
+
   if (!m_impl->stream->Write(msg))
   {
     // A rejected open closes the stream, and the reason is in the final status rather than in the
