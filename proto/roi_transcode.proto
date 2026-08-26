@@ -273,6 +273,14 @@ message ImportancePolicy {
   // Ends of the importance→QP line. See smartvideo::ImportancePolicy.
   optional int32 qp_at_zero            = 6;
   optional int32 qp_at_one             = 7;
+
+  // TemporalStability: brand-new track floor and rise time (seconds) toward 1.0.
+  optional float temporal_stability_floor    = 8;
+  optional float temporal_stability_tau_sec  = 9;
+  // MotionWeight is optional in §11. Off unless use_motion_weight is true.
+  optional bool  use_motion_weight           = 10;
+  optional float motion_weight_floor         = 11;
+  optional float motion_speed_at_full        = 12;
 }
 
 // =============================================================================
