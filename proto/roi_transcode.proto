@@ -298,6 +298,21 @@ message FileSettings {
   // Encoder speed/quality trade-off. Unset is balanced.
   Preset     preset  = 5;
   RoiQuality roi     = 6;
+  // §15 outer bitrate loop. Optional on file jobs for offline calibration against a
+  // target average; the live path is what it was designed for (see StreamSettings).
+  RateControl rate_control = 7;
+}
+
+message RateControl {
+  // Target average bitrate in bits per second. 0 leaves CQP/CRF alone.
+  uint64 target_bitrate = 1;
+  // Allowed average overshoot as a fraction (0.1 = 10%). Unset uses the library default.
+  optional float max_average_overshoot = 2;
+  // Importance at or above this is never softened. Unset keeps 0.95 (face/plate).
+  optional float critical_importance = 3;
+  // Declared but not implemented: setting either is refused at open.
+  optional float max_peak_overshoot = 4;
+  optional uint32 recovery_window_ms = 5;
 }
 
 message FileJobRequest {
@@ -362,9 +377,8 @@ enum InputCodec {
   INPUT_CODEC_JPEG = 3;
 }
 
-// Identical to FileSettings today. Kept separate so that what a live stream
-// needs and a file does not -- a bitrate target and a buffer model -- can be
-// added here without touching the file contract.
+// Identical to FileSettings today for the shared knobs. Bitrate ceiling and buffer
+// model live here as RateControl -- that is why the type was kept separate.
 message StreamSettings {
   Encoder    encoder = 1;
   Codec      codec   = 2;
@@ -372,6 +386,7 @@ message StreamSettings {
   int32      gop     = 4;
   Preset     preset  = 5;
   RoiQuality roi     = 6;
+  RateControl rate_control = 7;
 }
 
 // The first message of the stream. Describes everything that cannot change
