@@ -80,7 +80,9 @@ void print_roi_usage()
     "  --crf N                constant quantizer (encoder's own default)\n"
     "  --gop N                keyframe interval in frames (same as the source)\n"
     "  --background-qp N      how much worse the background gets, e.g. 6\n"
-    "  --qp KIND=DELTA        per-kind offset, repeatable, e.g. --qp license_plate=-12\n"
+    "  --qp KIND=DELTA        per-kind override; omit to let §11 importance decide\n"
+    "  --qp-at-zero N         importance→QP line at I=0 (default 5; product 3)\n"
+    "  --qp-at-one N          importance→QP line at I=1 (default -10; product -12)\n"
     "  --pad F                halo around each box as a fraction of the frame, e.g. 0.02\n"
     "  --max-regions N        upper bound on regions handed to the encoder\n"
     "  --regions boxes|mask   how the regions travel; a mask costs no region budget, which\n"
@@ -199,6 +201,18 @@ int run_roi_cli(const std::vector<std::string>& args)
       }
       qp_overrides.emplace_back(v->substr(0, eq), std::stoi(v->substr(eq + 1)));
     }
+    else if (a == "--qp-at-zero")
+    {
+      if (!(v = need_value(i))) return 2;
+      cfg.encode.qp_at_zero = std::stoi(*v);
+      cfg.encode.has_qp_at_zero = true;
+    }
+    else if (a == "--qp-at-one")
+    {
+      if (!(v = need_value(i))) return 2;
+      cfg.encode.qp_at_one = std::stoi(*v);
+      cfg.encode.has_qp_at_one = true;
+    }
     else if (a == "--help" || a == "-h") { print_roi_usage(); return 0; }
     else
     {
@@ -230,10 +244,10 @@ int run_roi_cli(const std::vector<std::string>& args)
 
   for (auto& [kind, delta] : qp_overrides)
     cfg.encode.kinds.push_back(roi_kind_quality{ kind, delta, pad });
-  // A halo asked for with no per-kind offsets has nothing to attach to, and silently doing
-  // nothing with it is worse than saying so.
-  if (pad > 0 && qp_overrides.empty())
-    log()->warn("--pad has no effect without --qp: there are no kinds to pad");
+  // Without per-kind rows the pad rides on RoiQuality.pad -- that is the importance path,
+  // and it is what the archive pass uses. With per-kind rows each kind carries its own.
+  if (pad > 0)
+    cfg.encode.pad = pad;
 
   // Only what this mode actually uses. ANALYTICS_GRPC_PORT is deliberately not required: nothing
   // here listens, and demanding it would make an offline pass depend on a port it never binds.

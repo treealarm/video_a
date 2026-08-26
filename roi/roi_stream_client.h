@@ -44,6 +44,19 @@ struct roi_encode_settings {
   bool has_background_qp_delta = false;
   int32_t background_qp_delta = 0;
 
+  /// Halo for the importance path (no per-kind rows). 0 means "leave the service default".
+  double pad = 0;
+
+  /// Ends of the §11 importance→QP line. Unset keeps the library defaults (−10 / −4 for
+  /// plate / vehicle). The product point "plate −12, vehicle −6" is zero=3, one=-12.
+  bool has_qp_at_zero = false;
+  int32_t qp_at_zero = 0;
+  bool has_qp_at_one = false;
+  int32_t qp_at_one = 0;
+
+  bool has_max_protected_fraction = false;
+  float max_protected_fraction = 0;
+
   std::vector<roi_kind_quality> kinds;
 };
 

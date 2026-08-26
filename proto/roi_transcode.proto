@@ -237,6 +237,32 @@ message RoiQuality {
   // strongest-first and the tail is dropped; how many were dropped is reported
   // back. 0 takes the built-in default.
   int32           max_regions          = 6;
+
+  // Halo around every box whose kind is not in `kinds`, as a fraction of the frame.
+  // The importance path has no per-kind row to hang a pad on, so this is where it lives.
+  optional double pad                  = 7;
+
+  // §11. What a region is worth when `kinds` does not name it. Leaving this unset keeps
+  // the library defaults (the §12 line: plate −10, vehicle −4). The product point
+  // "plate −12, vehicle −6" is qp_at_zero=3, qp_at_one=-12 on the same slope.
+  optional ImportancePolicy importance = 8;
+
+  // How much of the frame may be protected before importance decides who misses out.
+  // 0 disables the budget. Unset keeps the library default (a quarter of the frame).
+  optional float  max_protected_fraction = 9;
+}
+
+// The importance model of TZ §11, as a wire setting. Semantic and task tables are sparse:
+// only the kinds you name are overridden; everything else keeps the built-in table.
+message ImportancePolicy {
+  map<string, float> semantic_priority = 1;
+  map<string, float> task_priority     = 2;
+  optional float unknown_priority      = 3;
+  optional float assumed_confidence    = 4;
+  optional bool  weigh_confidence_on_known_classes = 5;
+  // Ends of the importance→QP line. See smartvideo::ImportancePolicy.
+  optional int32 qp_at_zero            = 6;
+  optional int32 qp_at_one             = 7;
 }
 
 // =============================================================================

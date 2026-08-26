@@ -121,6 +121,18 @@ bool roi_stream_client::open(const roi_encode_settings& settings, int32_t width,
     q->set_background_qp_delta(settings.background_qp_delta);
   if (settings.max_regions > 0)
     q->set_max_regions(settings.max_regions);
+  if (settings.pad > 0)
+    q->set_pad(settings.pad);
+  if (settings.has_max_protected_fraction)
+    q->set_max_protected_fraction(settings.max_protected_fraction);
+  if (settings.has_qp_at_zero || settings.has_qp_at_one)
+  {
+    auto* imp = q->mutable_importance();
+    if (settings.has_qp_at_zero)
+      imp->set_qp_at_zero(settings.qp_at_zero);
+    if (settings.has_qp_at_one)
+      imp->set_qp_at_one(settings.qp_at_one);
+  }
   for (const auto& k : settings.kinds)
   {
     auto* kq = q->add_kinds();
