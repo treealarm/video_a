@@ -122,6 +122,13 @@ public:
   bool send_frame_mask(int64_t pts, const uint8_t* data, size_t size,
     const uint8_t* mask, int32_t mask_width, int32_t mask_height);
 
+  /// The same frame with a ready per-block QP delta map. `deltas` is signed int8, length
+  /// cols*rows, raster order. Prefer this over boxes when the client already knows the
+  /// encoder's coding-block grid — the service will not re-run box→importance→rects.
+  bool send_frame_qp_map(int64_t pts, const uint8_t* data, size_t size,
+    int32_t block, int32_t cols, int32_t rows, int32_t width, int32_t height,
+    const int8_t* deltas, size_t deltas_size);
+
   /// Half-closes and waits for the service's summary. Must be called for the output file to be
   /// finalized: the muxer's trailer is written when the stream ends.
   bool finish(roi_encode_report& report, std::string& error);

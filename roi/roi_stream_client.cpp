@@ -228,6 +228,29 @@ bool roi_stream_client::send_frame_mask(int64_t pts, const uint8_t* data, size_t
   return m_impl->stream->Write(msg);
 }
 
+bool roi_stream_client::send_frame_qp_map(int64_t pts, const uint8_t* data, size_t size,
+  int32_t block, int32_t cols, int32_t rows, int32_t width, int32_t height,
+  const int8_t* deltas, size_t deltas_size)
+{
+  if (!m_impl->open)
+    return false;
+
+  rt::EncodeStreamRequest msg;
+  auto* frame = msg.mutable_frame();
+  frame->set_pts(pts);
+  frame->set_data(data, size);
+
+  auto* m = frame->mutable_qp_map();
+  m->set_block(block);
+  m->set_cols(cols);
+  m->set_rows(rows);
+  m->set_width(width);
+  m->set_height(height);
+  m->set_deltas(deltas, deltas_size);
+
+  return m_impl->stream->Write(msg);
+}
+
 bool roi_stream_client::finish(roi_encode_report& report, std::string& error)
 {
   if (!m_impl->open)

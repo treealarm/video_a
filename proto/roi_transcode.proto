@@ -211,6 +211,20 @@ message Mask {
   bytes data   = 3;
 }
 
+// Signed QP delta per coding block, raster order. This is what a qp_map-capable
+// backend paints onto; the service merges equal-delta runs into rectangles only
+// when the opened encoder needs them. `deltas` is tightly packed int8, length
+// cols * rows. `width`/`height` are the frame extent the grid was built for
+// (last row/column may be partial blocks).
+message QpDeltaMap {
+  int32 block  = 1;
+  int32 cols   = 2;
+  int32 rows   = 3;
+  int32 width  = 4;
+  int32 height = 5;
+  bytes deltas = 6;
+}
+
 // How much better than the background one kind of region gets -- an explicit
 // override of the ObjectPriority ladder for that class name.
 message KindQuality {
@@ -300,14 +314,17 @@ message ClassWeighting {
   optional float motion_speed_at_full        = 10;
 }
 
-// §13 -- only fields the service actually implements. Smoothing and track
-// prediction are not declared: a rejected setting is worse than an absent one.
+// §13 -- Temporal ROI (TZ v3). Smoothing and track prediction are implemented in the
+// library; unset fields keep the v3 defaults from TemporalROIConfig.
 message TemporalRoiConfig {
   optional uint32 max_missing_frames      = 1;
   optional double max_hold_sec            = 2;
   optional float  confidence_decay        = 3;
-  // Ceiling on how fast a region's QP may move between frames. 0 leaves it off.
+  // Ceiling on how fast a region's QP may move between frames. Unset keeps the v3 default (2).
   optional int32  max_qp_delta_per_frame  = 4;
+  optional float  spatial_smoothing       = 5;
+  optional float  temporal_smoothing      = 6;
+  optional bool   use_track_prediction    = 7;
 }
 
 // =============================================================================
@@ -460,10 +477,12 @@ message StreamFrame {
   bytes data = 2;
 
   // What to keep sharp in this frame. A frame may carry neither, in which case
-  // only the background treatment applies.
+  // only the background treatment applies. qp_map takes precedence over mask
+  // and boxes on the library side when more than one were somehow set.
   oneof regions {
-    Mask    mask  = 3;
-    BoxList boxes = 4;
+    Mask       mask   = 3;
+    BoxList    boxes  = 4;
+    QpDeltaMap qp_map = 5;
   }
 }
 

@@ -67,6 +67,10 @@ analytics-worker --help    # the rest of the knobs
 `roi_transcode/integration/scripts/roi-clip.sh` runs this together with the encoder service and a
 player, which is usually what you want.
 
+`--regions qp_map` paints detections onto the encoder's coding-block QP grid on this side and
+sends that map over the stream (and optionally writes `*.qpmap.json`). Use it to exercise the
+library's qp_map path without re-running box→importance→rects on the service.
+
 Two things it does differently from a watch. It does **not** go through `frame_sampler`: that
 sheds packets under load, which is right for a live source and wrong for a transcode, so this path
 decodes inline on the reader's thread and lets the encoder back-pressure it. And detection stays

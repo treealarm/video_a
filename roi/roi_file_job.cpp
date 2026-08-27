@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -88,6 +89,56 @@ struct sidecar_frame {
   std::vector<roi_box> boxes;
 };
 
+struct qpmap_sidecar_frame {
+  double t = 0;
+  int cols = 0;
+  int rows = 0;
+  std::vector<int8_t> deltas;
+};
+
+// Optional companion to the boxes sidecar: the per-block QP grid that was sent when
+// --regions qp_map. Written as one document so a later offline encode can replay it.
+struct qpmap_sidecar {
+  int width = 0;
+  int height = 0;
+  int block = 0;
+  std::string input;
+  std::string output;
+  std::vector<qpmap_sidecar_frame> frames;
+
+  bool write(const std::string& path) const
+  {
+    std::ofstream out(path, std::ios::trunc);
+    if (!out)
+      return false;
+
+    out << "{\n";
+    out << "  \"width\": " << width << ",\n";
+    out << "  \"height\": " << height << ",\n";
+    out << "  \"block\": " << block << ",\n";
+    out << "  \"input\": \"" << json_escape(input) << "\",\n";
+    out << "  \"output\": \"" << json_escape(output) << "\",\n";
+    out << "  \"frames\": [\n";
+    for (size_t i = 0; i < frames.size(); ++i)
+    {
+      const auto& f = frames[i];
+      out << "    {\"t\": " << f.t
+          << ", \"cols\": " << f.cols
+          << ", \"rows\": " << f.rows
+          << ", \"deltas\": [";
+      for (size_t j = 0; j < f.deltas.size(); ++j)
+      {
+        if (j) out << ",";
+        out << static_cast<int>(f.deltas[j]);
+      }
+      out << "]}" << (i + 1 == frames.size() ? "\n" : ",\n");
+    }
+    out << "  ]\n";
+    out << "}\n";
+    return out.good();
+  }
+};
+
 // The regions of every frame, in the file's own timeline. Written as one document at the end
 // rather than streamed, because a player wants the frame size in the header and that is only
 // known once the first frame has been decoded.
@@ -157,6 +208,8 @@ public:
   {
     m_sidecar.input = config.input_path;
     m_sidecar.output = config.encode.output_path;
+    m_qpmap.input = config.input_path;
+    m_qpmap.output = config.encode.output_path;
   }
 
   void on_packet(const std::shared_ptr<media_packet>& pkt) override
@@ -191,6 +244,7 @@ public:
   int64_t frames_sent() const { return m_frames_sent; }
   int64_t detections_run() const { return m_detect_passes; }
   const sidecar& regions() const { return m_sidecar; }
+  const qpmap_sidecar& qp_maps() const { return m_qpmap; }
 
 private:
   bool ensure_decoder(const media_packet& pkt)
@@ -409,6 +463,94 @@ private:
     return true;
   }
 
+  /// The kind's signed QP delta, or nullopt when this kind has no override (skip painting).
+  const int32_t* kind_qp_delta(const std::string& kind) const
+  {
+    for (const auto& k : m_config.encode.kinds)
+      if (k.kind == kind)
+        return &k.qp_delta;
+    return nullptr;
+  }
+
+  double kind_pad(const std::string& kind) const
+  {
+    for (const auto& k : m_config.encode.kinds)
+      if (k.kind == kind)
+        return k.pad;
+    return m_config.encode.pad;
+  }
+
+  int qpmap_block_size() const
+  {
+    if (m_config.qpmap_block > 0)
+      return m_config.qpmap_block;
+    // Match smartvideo EncoderCapabilities for libx264 / libx265.
+    return m_config.encode.codec == "h264" ? 16 : 32;
+  }
+
+  /// Paints held boxes onto a coding-block QP grid. More-negative deltas win on overlap
+  /// (stronger protection). Pads are applied before bodies so a body can override its halo.
+  void build_qp_map(int frame_width, int frame_height)
+  {
+    const int block = qpmap_block_size();
+    m_qp_block = block;
+    m_qp_cols = std::max(1, (frame_width + block - 1) / block);
+    m_qp_rows = std::max(1, (frame_height + block - 1) / block);
+    m_qp_width = frame_width;
+    m_qp_height = frame_height;
+    const int8_t bg = static_cast<int8_t>(std::clamp(
+      m_config.encode.has_background_qp_delta ? m_config.encode.background_qp_delta : 6,
+      -51, 51));
+    m_qp_deltas.assign(static_cast<size_t>(m_qp_cols) * m_qp_rows, bg);
+
+    auto paint = [&](double nx0, double ny0, double nx1, double ny1, int8_t delta) {
+      const int x0 = std::clamp(static_cast<int>(std::floor(nx0 * frame_width)), 0, frame_width);
+      const int y0 = std::clamp(static_cast<int>(std::floor(ny0 * frame_height)), 0, frame_height);
+      const int x1 = std::clamp(static_cast<int>(std::ceil(nx1 * frame_width)), 0, frame_width);
+      const int y1 = std::clamp(static_cast<int>(std::ceil(ny1 * frame_height)), 0, frame_height);
+      if (x1 <= x0 || y1 <= y0)
+        return;
+      const int c0 = x0 / block;
+      const int r0 = y0 / block;
+      const int c1 = (x1 - 1) / block;
+      const int r1 = (y1 - 1) / block;
+      for (int r = r0; r <= r1; ++r)
+      {
+        for (int c = c0; c <= c1; ++c)
+        {
+          int8_t& cell = m_qp_deltas[static_cast<size_t>(r) * m_qp_cols + c];
+          if (delta < cell)
+            cell = delta;
+        }
+      }
+    };
+
+    for (const auto& b : m_held)
+    {
+      const int32_t* body = kind_qp_delta(b.kind);
+      if (!body)
+        continue;
+      const double pad = kind_pad(b.kind);
+      if (pad > 0.0)
+      {
+        // Halo is half the body's offset toward the background -- same rule as the encoder.
+        const int32_t bg_i = m_config.encode.has_background_qp_delta
+          ? m_config.encode.background_qp_delta : 6;
+        const int8_t pad_delta = static_cast<int8_t>(std::clamp(
+          (*body + bg_i) / 2, -51, 51));
+        paint(b.x - pad, b.y - pad, b.x + b.width + pad, b.y + b.height + pad, pad_delta);
+      }
+    }
+    for (const auto& b : m_held)
+    {
+      const int32_t* body = kind_qp_delta(b.kind);
+      if (!body)
+        continue;
+      paint(b.x, b.y, b.x + b.width, b.y + b.height,
+        static_cast<int8_t>(std::clamp(*body, -51, 51)));
+    }
+  }
+
   /// The kind's strength as a mask value. A mask carries one scale rather than a delta per
   /// region, so the per-kind offsets are placed on it: the background sits at 0, the strongest
   /// kind asked for at 255, and everything else in between. The service reads the same
@@ -513,6 +655,24 @@ private:
       sent = m_client.send_frame_mask(pts, m_yuv.data(), m_yuv.size(),
         m_mask.data(), m_mask_width, m_mask_height);
     }
+    else if (m_config.regions == roi_region_form::qp_map)
+    {
+      build_qp_map(frame->width, frame->height);
+      sent = m_client.send_frame_qp_map(pts, m_yuv.data(), m_yuv.size(),
+        m_qp_block, m_qp_cols, m_qp_rows, m_qp_width, m_qp_height,
+        m_qp_deltas.data(), m_qp_deltas.size());
+      if (sent && !m_config.qpmap_json_path.empty())
+      {
+        if (m_qpmap.width == 0)
+        {
+          m_qpmap.width = frame->width;
+          m_qpmap.height = frame->height;
+          m_qpmap.block = m_qp_block;
+        }
+        m_qpmap.frames.push_back(
+          qpmap_sidecar_frame{ t, m_qp_cols, m_qp_rows, m_qp_deltas });
+      }
+    }
     else
     {
       sent = m_client.send_frame(pts, m_yuv.data(), m_yuv.size(), m_held);
@@ -559,12 +719,20 @@ private:
   int m_mask_width = 0;
   int m_mask_height = 0;
 
+  std::vector<int8_t> m_qp_deltas;
+  int m_qp_block = 0;
+  int m_qp_cols = 0;
+  int m_qp_rows = 0;
+  int m_qp_width = 0;
+  int m_qp_height = 0;
+
   bool m_opened = false;
   bool m_failed = false;
   int64_t m_frames_sent = 0;
   int64_t m_last_pts = 0;
 
   sidecar m_sidecar;
+  qpmap_sidecar m_qpmap;
 };
 
 }  // namespace
@@ -741,6 +909,16 @@ bool run_roi_file_job(const roi_job_config& config)
       return false;
     }
     log()->info("roi job: regions written to {}", cfg.boxes_json_path);
+  }
+
+  if (!cfg.qpmap_json_path.empty())
+  {
+    if (!sink->qp_maps().write(cfg.qpmap_json_path))
+    {
+      log()->error("roi job: cannot write {}", cfg.qpmap_json_path);
+      return false;
+    }
+    log()->info("roi job: qp_map written to {}", cfg.qpmap_json_path);
   }
 
   return true;

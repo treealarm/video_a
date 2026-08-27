@@ -88,10 +88,15 @@ void print_roi_usage()
     "  --target-bitrate N     outer-loop average bitrate ceiling in bits/sec (0 = CQP/CRF only)\n"
     "  --bitrate-overshoot F  allowed average overshoot fraction, e.g. 0.1\n"
     "  --max-regions N        upper bound on regions handed to the encoder\n"
-    "  --regions boxes|mask   how the regions travel; a mask costs no region budget, which\n"
-    "                         matters on a driver that accepts only a handful (boxes)\n"
+    "  --regions boxes|mask|qp_map\n"
+    "                         how the regions travel (boxes). mask: one 0..255 surface,\n"
+    "                         no region budget. qp_map: signed QP per coding block — what\n"
+    "                         the library builds internally; skips box→rects re-quantize\n"
     "  --mask-scale N         mask is 1/N of the frame; finer than the 32px block grid is\n"
-    "                         bytes on the wire for nothing (8)\n");
+    "                         bytes on the wire for nothing (8)\n"
+    "  --qpmap PATH           write qp_map sidecar when --regions qp_map (default: INPUT\n"
+    "                         with .qpmap.json; '-' skips)\n"
+    "  --qpmap-block N        coding-block edge for qp_map; 0 = 16 for h264, 32 else (0)\n");
 }
 
 bool parse_classes(const std::string& list, std::vector<detection_kind>& out)
@@ -140,6 +145,7 @@ int run_roi_cli(const std::vector<std::string>& args)
   roi_job_config cfg;
   std::string out_path;
   std::string boxes_path;
+  std::string qpmap_path;
   double pad = 0;
   std::vector<std::pair<std::string, int32_t>> qp_overrides;
 
@@ -161,6 +167,8 @@ int run_roi_cli(const std::vector<std::string>& args)
     else if (a == "--roi-grpc")       { if (!(v = need_value(i))) return 2; cfg.encode.target = *v; }
     else if (a == "--out")            { if (!(v = need_value(i))) return 2; out_path = *v; }
     else if (a == "--boxes")          { if (!(v = need_value(i))) return 2; boxes_path = *v; }
+    else if (a == "--qpmap")          { if (!(v = need_value(i))) return 2; qpmap_path = *v; }
+    else if (a == "--qpmap-block")    { if (!(v = need_value(i))) return 2; cfg.qpmap_block = std::stoi(*v); }
     else if (a == "--detect-fps")     { if (!(v = need_value(i))) return 2; cfg.detect_fps = std::stod(*v); }
     else if (a == "--min-confidence") { if (!(v = need_value(i))) return 2; cfg.min_confidence = std::stof(*v); }
     else if (a == "--encoder")        { if (!(v = need_value(i))) return 2; cfg.encode.encoder = *v; }
@@ -174,11 +182,12 @@ int run_roi_cli(const std::vector<std::string>& args)
     else if (a == "--regions")
     {
       if (!(v = need_value(i))) return 2;
-      if (*v == "boxes")     cfg.regions = roi_region_form::boxes;
-      else if (*v == "mask") cfg.regions = roi_region_form::mask;
+      if (*v == "boxes")      cfg.regions = roi_region_form::boxes;
+      else if (*v == "mask")  cfg.regions = roi_region_form::mask;
+      else if (*v == "qp_map") cfg.regions = roi_region_form::qp_map;
       else
       {
-        std::fprintf(stderr, "--regions wants boxes or mask, got '%s'\n", v->c_str());
+        std::fprintf(stderr, "--regions wants boxes, mask, or qp_map, got '%s'\n", v->c_str());
         return 2;
       }
     }
@@ -259,6 +268,11 @@ int run_roi_cli(const std::vector<std::string>& args)
   {
     cfg.boxes_json_path = absolute_path(
       boxes_path.empty() ? default_sibling(cfg.input_path, ".boxes.json") : boxes_path);
+  }
+  if (cfg.regions == roi_region_form::qp_map && qpmap_path != "-")
+  {
+    cfg.qpmap_json_path = absolute_path(
+      qpmap_path.empty() ? default_sibling(cfg.input_path, ".qpmap.json") : qpmap_path);
   }
 
   for (auto& [kind, delta] : qp_overrides)

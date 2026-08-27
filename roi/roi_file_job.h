@@ -23,13 +23,14 @@
 // which is the same thing the encoder's own `hold_sec` does for file jobs, done here because here
 // the boxes are known per frame.
 
-/// How the regions reach the encoder. The ТЗ contract offers both, and they are not the same
-/// request: boxes are exact rectangles with a per-kind strength each, a mask is one graded
-/// surface sampled onto the encoder's block grid. A mask costs no region budget — which is what
-/// matters on a driver that accepts eight of them — and loses the box edges in exchange.
+/// How the regions reach the encoder. The ТЗ contract offers boxes and a mask; qp_map is
+/// the same block grid the library builds internally, painted here so the encoder does not
+/// re-quantize boxes through a region budget. A mask costs no region budget either, but
+/// loses per-kind QP (one 0..255 scale); qp_map keeps signed deltas per block.
 enum class roi_region_form {
   boxes,
   mask,
+  qp_map,
 };
 
 struct roi_job_config {
@@ -37,6 +38,9 @@ struct roi_job_config {
   /// Sidecar written beside the output: the same regions that were sent to the encoder, so the
   /// result can be checked against what it was asked to protect. Empty skips it.
   std::string boxes_json_path;
+  /// Optional qp_map sidecar (JSON). Empty skips; when regions==qp_map and this is left empty
+  /// the job still sends maps on the wire without writing a file.
+  std::string qpmap_json_path;
 
   roi_encode_settings encode;
 
@@ -44,6 +48,8 @@ struct roi_job_config {
   /// How much smaller than the frame the mask is drawn. The encoder samples it onto a 32-pixel
   /// block grid, so anything finer than that is bytes on the wire for nothing.
   int mask_scale = 8;
+  /// Coding-block edge for qp_map. 0 picks 16 for H.264 and 32 otherwise.
+  int qpmap_block = 0;
 
   // Detection
   std::string model_dir;
