@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #include <unordered_set>
 
@@ -40,11 +41,9 @@ bbox_t to_full_frame(const bbox_t& parent, const bbox_t& child)
   };
 }
 
-// How much larger than the vehicle box the crop handed to the plate detector is. The barrier SSD
-// was trained on whole scenes and reads the plate off the car's proportions, so a box cropped
-// exactly to the vehicle takes that away and it finds nothing at all: measured on the OMZ car_1
-// sample, a tight crop scores 0.0 and the same crop with half a box of margin scores 0.98. Anything
-// from a quarter of a box upwards works; half is the middle of that range.
+// How much larger than the vehicle box a plate may sit in and still count as that vehicle's.
+// Plates are found on the full frame (YOLO); this only associates them to a track. Half a box
+// covers bumper overhang when the primary vehicle box is tight on the body.
 constexpr float kPlateContextMargin = 0.5f;
 
 // Grow the box by `margin` of its own size on every side, clamped to the frame. Clamping means a
@@ -234,41 +233,54 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
         emit(out);
       }
 
-      if (wants(detection_kind::license_plate))
+    }
+  }
+
+  // Plates are detected on the full frame (not per-vehicle crops): the YOLO plate model letterboxes
+  // the scene, and squashing a wide rear-view vehicle crop into a square was what made the old
+  // barrier SSD miss readable plates while latching onto badges. Association to a vehicle track
+  // is best-effort — a plate with no owner is still emitted (track_id 0) so ROI encoding can use it.
+  if (wants(detection_kind::license_plate))
+  {
+    for (const auto& p : m_plate->infer(frame))
+    {
+      if (p.confidence < m_config.min_confidence) continue;
+
+      int64_t track_id = 0;
+      float best_area = std::numeric_limits<float>::max();
+      for (const auto& t : tracked)
       {
+        if (t.kind != detection_kind::vehicle) continue;
         const auto context_box = expand(t.bbox, kPlateContextMargin);
-        const auto vehicle_crop = crop_region(frame, context_box);
-        for (const auto& p : m_plate->infer(vehicle_crop))
+        if (!contains_center(context_box, p.bbox)) continue;
+        const float area = t.bbox.width * t.bbox.height;
+        if (area < best_area)
         {
-          if (p.confidence < m_config.min_confidence) continue;
-          // The margin above also reaches over neighbouring cars, so the same plate can be found
-          // from two tracks. Keep it for the vehicle it actually sits on.
-          const auto full_frame_box = to_full_frame(context_box, p.bbox);
-          if (!contains_center(t.bbox, full_frame_box)) continue;
-
-          const auto plate_crop = crop_region(vehicle_crop, p.bbox);
-          const auto ocr = m_ocr->infer(plate_crop);
-
-          final_detection out{
-            .track_id = t.track_id,
-            .kind = detection_kind::license_plate,
-            .confidence = p.confidence,
-            .bbox = full_frame_box,
-            .detected_at = frame.captured_at,
-            .recognized_text = std::nullopt,
-            .text_confidence = std::nullopt,
-            // Plate crops are the caller's persistent artifact — always attached.
-            .crop_jpeg = encode_crop_jpeg(plate_crop),
-            .embedding = {},
-          };
-          if (ocr)
-          {
-            out.recognized_text = ocr->text;
-            out.text_confidence = ocr->confidence;
-          }
-          emit(out);
+          best_area = area;
+          track_id = t.track_id;
         }
       }
+
+      const auto plate_crop = crop_region(frame, p.bbox);
+      const auto ocr = m_ocr->infer(plate_crop);
+
+      final_detection out{
+        .track_id = track_id,
+        .kind = detection_kind::license_plate,
+        .confidence = p.confidence,
+        .bbox = p.bbox,
+        .detected_at = frame.captured_at,
+        .recognized_text = std::nullopt,
+        .text_confidence = std::nullopt,
+        .crop_jpeg = encode_crop_jpeg(plate_crop),
+        .embedding = {},
+      };
+      if (ocr)
+      {
+        out.recognized_text = ocr->text;
+        out.text_confidence = ocr->confidence;
+      }
+      emit(out);
     }
   }
 

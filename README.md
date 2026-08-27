@@ -99,18 +99,27 @@ note:** `models/primary_detector.*` is a YOLOv11n export and Ultralytics YOLOv11
 baking it into a distributed/deployed image is a deliberate, not-yet-fully-reconciled call (see
 `ta_install/README.md`'s "Analytics models" section). `models/` itself is gitignored; regenerate
 `primary_detector.xml/.bin` with `pip install ultralytics && python -c "from ultralytics import
-YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"`, and fetch the two OMZ models
-(Apache-2.0) straight from the release storage, renaming each pair to the name the loader looks
-for:
+YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"`, and fetch the face detector from
+OMZ plus a YOLOv8 single-class plate detector (the OMZ barrier SSD is Chinese front-facing only and
+mis-fires on badges like "Pajero" under a top-down rear camera):
 
 ```sh
 OMZ=https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1
 for ext in xml bin; do
   curl -sSLo "models/face_detector.$ext" \
     "$OMZ/face-detection-0205/FP32/face-detection-0205.$ext"
-  curl -sSLo "models/plate_detector.$ext" \
-    "$OMZ/vehicle-license-plate-detection-barrier-0106/FP32/vehicle-license-plate-detection-barrier-0106.$ext"
 done
+# Plate: YOLOv8n fine-tuned on plates (Arijit1080 / Licence-Plate-Detection-using-YOLO-V8),
+# exported to OpenVINO IR as models/plate_detector.{xml,bin}.
+curl -sSLo /tmp/yolov8n-plate.pt \
+  "https://raw.githubusercontent.com/Arijit1080/Licence-Plate-Detection-and-Recognition-using-YOLO-V8-EasyOCR/main/best.pt"
+python - <<'PY'
+from ultralytics import YOLO
+m = YOLO("/tmp/yolov8n-plate.pt")
+out = m.export(format="openvino", imgsz=640)
+print(out)
+PY
+# Rename the export's best.xml/.bin into models/plate_detector.xml/.bin
 ```
 
 Linking note: `openvino::openvino_intel_cpu_plugin` must be linked with `--whole-archive`

@@ -29,9 +29,10 @@ struct pipeline_config {
 };
 
 // Orchestrates the 4 inference stages on every sampled (keyframe-decoded) frame — see project
-// plan A.5. license_plate in classes always implies running primary_detector for VEHICLE crops,
-// even if "vehicle" itself isn't separately requested — that's an internal pipeline detail, not
-// something the caller needs to configure explicitly.
+// plan A.5. license_plate in classes always implies running primary_detector for VEHICLE tracks
+// (to associate plates), even if "vehicle" itself isn't separately requested — that's an internal
+// pipeline detail, not something the caller needs to configure explicitly. Plates themselves are
+// detected on the full frame.
 class pipeline {
 public:
   pipeline(pipeline_config config, const std::string& model_dir);
