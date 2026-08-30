@@ -70,11 +70,13 @@ void frame_sampler::on_packet(const std::shared_ptr<media_packet>& pkt)
       // this discards: pop the front, then keep popping until the queue starts on a keyframe
       // again — a packet the decoder can actually begin from.
       m_queue.pop_front();
-      while (!m_queue.empty() && !(m_queue.front()->packet->flags & AV_PKT_FLAG_KEY))
+      while (!m_queue.empty() && !(m_queue.front().pkt->packet->flags & AV_PKT_FLAG_KEY))
         m_queue.pop_front();
       log()->warn("frame_sampler: decode is behind, dropped a GOP");
     }
-    m_queue.push_back(pkt);
+    // Stamped here, on the read loop, rather than after the decode: this is the last moment that
+    // still corresponds to the picture rather than to how busy we are.
+    m_queue.push_back({pkt, std::chrono::system_clock::now()});
   }
   m_cv.notify_one();
 }
@@ -127,23 +129,26 @@ void frame_sampler::worker_loop()
 {
   while (m_running)
   {
-    std::shared_ptr<media_packet> pkt;
+    queued_packet queued;
     {
       std::unique_lock lock(m_queue_mutex);
       m_cv.wait(lock, [&] { return !m_queue.empty() || !m_running; });
       if (!m_running)
         break;
-      pkt = std::move(m_queue.front());
+      queued = std::move(m_queue.front());
       m_queue.pop_front();
     }
-    if (pkt)
-      decode_packet(*pkt);
+    if (queued.pkt)
+      decode_packet(*queued.pkt, queued.arrived_at);
   }
 }
 
-void frame_sampler::decode_packet(const media_packet& pkt)
+void frame_sampler::decode_packet(
+  const media_packet& pkt, std::chrono::system_clock::time_point arrived_at)
 {
   if (!ensure_decoder(pkt)) return;
+
+  m_current_arrival = arrived_at;
 
   if (avcodec_send_packet(m_decoder_ctx.get(), pkt.packet.get()) < 0)
     return;
@@ -252,7 +257,11 @@ void frame_sampler::handle_decoded_frame(AVFrame* frame)
   out.width = frame->width;
   out.height = frame->height;
   out.bgr.resize(static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height) * 3);
-  out.captured_at = std::chrono::system_clock::now();
+  // The packet's arrival, not the clock now: see m_current_arrival. Falls back to now() only if a
+  // frame somehow reaches here without a packet having been decoded, which nothing does today.
+  out.captured_at = m_current_arrival.time_since_epoch().count() != 0
+    ? m_current_arrival
+    : std::chrono::system_clock::now();
 
   uint8_t* dst_data[4] = { out.bgr.data(), nullptr, nullptr, nullptr };
   int dst_linesize[4] = { frame->width * 3, 0, 0, 0 };

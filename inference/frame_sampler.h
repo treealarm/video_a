@@ -69,7 +69,7 @@ private:
   bool ensure_sws_context(int width, int height, AVPixelFormat format);
   void handle_decoded_frame(AVFrame* frame);
   void worker_loop();
-  void decode_packet(const media_packet& pkt);
+  void decode_packet(const media_packet& pkt, std::chrono::system_clock::time_point arrived_at);
 
   std::function<void(const decoded_frame&)> m_callback;
 
@@ -86,9 +86,21 @@ private:
   // larger, because one GOP is hundreds of packets rather than one.
   static constexpr size_t k_max_queue = 2;
   static constexpr size_t k_max_queue_full = 120;
+  // A packet and the moment it reached this process.
+  //
+  // The time travels with the packet because it is the only honest answer to "when was this
+  // filmed", and it stops being obtainable the instant the packet is queued. Everything after this
+  // point -- the wait in the queue below, which is bounded at k_max_queue_full and so runs to
+  // seconds when decode falls behind, then the decode itself -- happens long after the picture
+  // existed. Reading the clock at the far end measured that delay into the answer.
+  struct queued_packet {
+    std::shared_ptr<media_packet> pkt;
+    std::chrono::system_clock::time_point arrived_at;
+  };
+
   std::mutex m_queue_mutex;
   std::condition_variable m_cv;
-  std::deque<std::shared_ptr<media_packet>> m_queue;
+  std::deque<queued_packet> m_queue;
   std::atomic_bool m_running{true};
   std::thread m_worker;
 
@@ -104,6 +116,15 @@ private:
   std::deque<std::chrono::steady_clock::time_point> m_keyframe_times;
   std::chrono::milliseconds m_keyframe_interval{0};  // 0 = not measured yet
   bool m_full_decode = false;
+
+  // Arrival time of the packet being decoded right now, for handle_decoded_frame to stamp onto
+  // whatever comes out. Worker thread only.
+  //
+  // A decoder may reorder, so the frame emerging from one packet is not always that packet's own.
+  // The error that introduces is the reorder depth -- a few frames, tens of milliseconds -- against
+  // the seconds of queue this removes, so the packet's arrival is used as it stands rather than
+  // carrying a per-frame map that would only sharpen an already small term.
+  std::chrono::system_clock::time_point m_current_arrival{};
 
   // Decoder/sws state is touched only by the worker thread — no locking needed.
   using avcodec_context_ptr = std::unique_ptr<AVCodecContext, avcodec_context_deleter>;
