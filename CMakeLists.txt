@@ -4,6 +4,12 @@ project(VideoAnalytics CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The vcpkg debug tree carries ~15 GB of static OpenVINO/gRPC archives; linking them drags 22 GB
+# of DWARF through a single-threaded ld. Our own translation units stay -g -O0, the third-party
+# imported targets resolve to their Release variants. Safe on Linux — libstdc++ has no separate
+# debug runtime — as long as _GLIBCXX_DEBUG stays off.
+set(CMAKE_MAP_IMPORTED_CONFIG_DEBUG Release "")
+
 find_package(PkgConfig REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
@@ -155,4 +161,9 @@ target_compile_options(analytics-worker PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra>
     $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
+
+# Keep our own DWARF in .dwo files instead of copying it into the executable at link time.
+target_compile_options(analytics-worker PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-gsplit-dwarf>
 )
