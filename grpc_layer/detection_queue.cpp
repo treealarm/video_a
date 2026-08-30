@@ -11,6 +11,7 @@ void detection_queue::push(queued_detection item)
     m_queue.pop_front(); // drop-oldest
   }
 
+  item.emitted_at = std::chrono::system_clock::now();
   m_queue.push_back(std::move(item));
   m_cv.notify_one();
 }

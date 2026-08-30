@@ -1,5 +1,8 @@
-// Canonical source of the analytics contract. Consumed by ta_vms as a vendored copy at
-// web_vms/VmsAnalytics/proto/analytics.proto — keep both in sync manually when this changes.
+// The analytics contract. It lives in two places, byte for byte the same, and this header is
+// worded so that it stays true in both: the canonical file is video_a/proto/analytics.proto,
+// and ta_vms carries a vendored copy at web_vms/VmsAnalyticsSingleton/proto/analytics.proto.
+// Both sides generate code from their own copy, so a change goes into both in one step -- an
+// empty `diff` between them is the whole of the check.
 //
 // video_a is a generic, product-agnostic RTSP-analytics engine: it knows nothing about camera
 // models, VmsCfg, or Dapr pub/sub. It exposes a small imperative control surface (StartWatch /
@@ -56,9 +59,13 @@ message WatchRequest {
   // watch then behaves exactly as it does on RTSP, paced to the file's own timestamps, and
   // restarts at the end so a short clip stands in for a continuous source.
   //
-  // Set instead of rtsp_url, not alongside it: a watch has one source. It exists so footage on
-  // disk can drive the detector without a media router in between -- which is what makes an
-  // offline pass over a clip possible at all.
+  // Set instead of rtsp_url, not alongside it: a watch has one source.
+  //
+  // This and listen_for_push above both take the media router off the detector's path, and they
+  // are not alternatives to each other. A live camera has no file to read -- its video exists
+  // only inside the process holding the socket -- so it uses the push. An offline pass over a
+  // corpus has no live source, and packing a clip into a stream just to hand it to the detector
+  // would add a link with nothing to test in it -- so it names the file.
   optional string file_path = 10;
 }
 
@@ -106,4 +113,12 @@ message DetectionEvent {
   // carried-along repeats. Lets the caller record a gallery sighting once per real observation
   // instead of once per frame, without losing the vector to queue drops.
   bool embedding_is_fresh = 12;
+  // When this detection was finished and handed over for delivery, as opposed to detected_at,
+  // which is when the frame it describes arrived.
+  //
+  // The two exist to be subtracted. detected_at has to name the frame -- an archive box drawn at
+  // any other instant sits on the wrong picture -- so it is stamped before the models run, and the
+  // interval between the two stamps is what the detector costs. Without this field that cost is
+  // indistinguishable from slow delivery, and both were being blamed for the other.
+  google.protobuf.Timestamp emitted_at = 13;
 }

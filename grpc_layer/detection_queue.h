@@ -12,6 +12,10 @@
 struct queued_detection {
   std::string watch_id;
   final_detection detection;
+  // Set by detection_queue::push, which is the boundary this measures: everything before it is
+  // the detector working, everything after is the answer travelling. Stamped there rather than
+  // at the call sites so it cannot be forgotten by one of them.
+  std::chrono::system_clock::time_point emitted_at{};
 };
 
 // Bridges watch_manager's detection callback (called from arbitrary reader threads) to the

@@ -123,6 +123,7 @@ grpc::Status analytics_service_impl::StreamDetections(
     bbox->set_height(item->detection.bbox.height);
 
     *evt.mutable_detected_at() = to_proto_timestamp(item->detection.detected_at);
+    *evt.mutable_emitted_at() = to_proto_timestamp(item->emitted_at);
     if (item->detection.recognized_text) evt.set_recognized_text(*item->detection.recognized_text);
     if (item->detection.text_confidence) evt.set_text_confidence(*item->detection.text_confidence);
     if (!item->detection.crop_jpeg.empty())
