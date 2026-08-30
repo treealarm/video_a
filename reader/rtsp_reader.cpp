@@ -43,10 +43,10 @@ std::string build_rtsp_url_with_auth(const std::string& url,
 
 rtsp_reader::rtsp_reader(
   const std::string& watch_id, const std::string& user, const std::string& pass, bool listen)
-  : m_watch_id(watch_id)
+  : m_listen(listen)
+  , m_watch_id(watch_id)
   , m_user(user)
   , m_password(pass)
-  , m_listen(listen)
 {
 }
 
