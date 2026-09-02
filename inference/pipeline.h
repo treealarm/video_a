@@ -15,7 +15,7 @@ class face_detector;
 class plate_detector;
 class plate_ocr;
 class tracker;
-class person_embedder;
+class appearance_embedder;
 
 struct pipeline_config {
   std::string watch_id;
@@ -51,7 +51,33 @@ private:
   std::unique_ptr<plate_detector> m_plate;
   std::unique_ptr<plate_ocr> m_ocr;
   std::unique_ptr<tracker> m_tracker;
-  std::unique_ptr<person_embedder> m_person_embed;
+  std::unique_ptr<appearance_embedder> m_person_embed;
+  std::unique_ptr<appearance_embedder> m_face_embed;
+  std::unique_ptr<appearance_embedder> m_vehicle_embed;
+  std::unique_ptr<appearance_embedder> m_plate_embed;
+
+  struct track_key {
+    detection_kind kind = detection_kind::person;
+    int64_t track_id = 0;
+    // Person/vehicle: always 0 (one cache slot per IoU track). Face/plate detections share the
+    // parent track_id (or 0 for an unassociated plate), so this quantized bbox keeps distinct
+    // objects from overwriting each other's cached vector.
+    int64_t slot = 0;
+    bool operator==(const track_key& other) const noexcept
+    {
+      return kind == other.kind && track_id == other.track_id && slot == other.slot;
+    }
+  };
+  struct track_key_hash {
+    size_t operator()(const track_key& key) const noexcept
+    {
+      // kind fits in the three shifted bits; slot is mixed separately so face/plate boxes
+      // that share a track_id do not collide in the map.
+      return (static_cast<size_t>(key.track_id) << 3)
+        ^ static_cast<size_t>(key.kind)
+        ^ (static_cast<size_t>(key.slot) * 2654435761u);
+    }
+  };
 
   struct track_embedding {
     std::chrono::steady_clock::time_point computed_at{};
@@ -61,5 +87,5 @@ private:
   // Most recent re-id embedding per live track, and when it was computed. A track absent from this
   // map has not been embedded yet (its next frame is treated as START). Pruned to the
   // currently-tracked set each frame so it can't leak as track ids churn.
-  std::unordered_map<int64_t, track_embedding> m_track_embed;
+  std::unordered_map<track_key, track_embedding, track_key_hash> m_track_embed;
 };

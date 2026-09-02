@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <chrono>
 #include <format>
 #include <string_view>
@@ -8,6 +9,30 @@
 
 namespace {
 constexpr auto kWatchdogInterval = std::chrono::seconds(5);
+
+// Pause between two failed reads of a connection that is still considered live. Without it a
+// stream that keeps failing is read in a tight loop that burns a core and, because libavformat
+// logs every one of those failures, buries the log under thousands of identical lines per second.
+// Short enough to be invisible next to a frame interval on any real stream.
+constexpr auto kReadRetryInterval = std::chrono::milliseconds(20);
+
+// Pause after the connection was torn down, before opening the next one. A camera that accepts an
+// RTSP session and drops it immediately would otherwise be reconnected as fast as the handshake
+// completes; the connect-failed path below already backs off, this is the same courtesy for the
+// case where connecting is exactly what keeps succeeding.
+constexpr auto kReconnectInterval = std::chrono::seconds(1);
+
+// Errors that say the far end is gone rather than that this read did not work out. Waiting the
+// full watchdog interval for one of these buys nothing -- no further packet is coming on this
+// connection -- so they reconnect at once.
+bool is_connection_lost(int averror)
+{
+  return averror == AVERROR_EOF
+    || averror == AVERROR(EPIPE)
+    || averror == AVERROR(ECONNRESET)
+    || averror == AVERROR(ENOTCONN)
+    || averror == AVERROR(ETIMEDOUT);
+}
 
 constexpr std::string_view kRtspPrefix = "rtsp://";
 
@@ -232,12 +257,30 @@ void rtsp_reader::read_loop()
 
     if (read_result < 0)
     {
+      const bool connection_lost = is_connection_lost(read_result);
       const auto now = std::chrono::steady_clock::now();
-      if (now - last_frame_at >= kWatchdogInterval)
+      if (connection_lost || now - last_frame_at >= kWatchdogInterval)
       {
-        log()->warn("RTSP watchdog: reconnecting [watch={}]: {}", m_watch_id, m_rtsp_url);
+        if (connection_lost)
+          log()->warn("RTSP connection lost, reconnecting [watch={}]: {}", m_watch_id, m_rtsp_url);
+        else
+          log()->warn("RTSP watchdog: reconnecting [watch={}]: {}", m_watch_id, m_rtsp_url);
         disconnect();
+        // The interrupt callback only ends a blocking libav call, not a sleep, so the backoff is
+        // spent in short slices that re-check m_running -- a watch being removed must not have to
+        // wait it out.
+        for (auto waited = std::chrono::milliseconds::zero();
+             m_running && waited < kReconnectInterval;
+             waited += kReadRetryInterval)
+        {
+          std::this_thread::sleep_for(kReadRetryInterval);
+        }
+        continue;
       }
+      // Still within the watchdog's grace period: the error may yet be transient (EAGAIN on a
+      // non-blocking socket, a short read), so keep the connection and try again -- but not
+      // immediately.
+      std::this_thread::sleep_for(kReadRetryInterval);
       continue;
     }
 

@@ -32,6 +32,8 @@ set(ROI_TRANSCODE_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/roi_transcode.pro
 set(SOURCES
     main.cpp
     logging.h
+    ffmpeg_log.cpp
+    ffmpeg_log.h
     watch_manager.cpp
     watch_manager.h
     crop_encoder.cpp
@@ -76,8 +78,8 @@ set(SOURCES
     inference/plate_ocr.h
     inference/tracker.cpp
     inference/tracker.h
-    inference/person_embedder.cpp
-    inference/person_embedder.h
+    inference/appearance_embedder.cpp
+    inference/appearance_embedder.h
     inference/pipeline.cpp
     inference/pipeline.h
 )

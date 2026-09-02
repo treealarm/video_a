@@ -18,6 +18,7 @@ service AnalyticsService {
   rpc StartWatch(WatchRequest) returns (WatchResponse);
   rpc StopWatch(StopWatchRequest) returns (OperationStatus);
   rpc StreamDetections(StreamDetectionsRequest) returns (stream DetectionEvent);
+  rpc EmbedImage(EmbedImageRequest) returns (EmbedImageResponse);
 }
 
 enum DetectionKind {
@@ -121,4 +122,18 @@ message DetectionEvent {
   // interval between the two stamps is what the detector costs. Without this field that cost is
   // indistinguishable from slow delivery, and both were being blamed for the other.
   google.protobuf.Timestamp emitted_at = 13;
+}
+
+message EmbedImageRequest {
+  bytes jpeg = 1;
+  DetectionKind kind = 2;
+  optional BoundingBox bbox = 3;
+  bool detect_first = 4;
+}
+
+message EmbedImageResponse {
+  bool success = 1;
+  string message = 2;
+  repeated float embedding = 3;
+  optional BoundingBox bbox = 4;
 }

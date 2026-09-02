@@ -10,6 +10,7 @@
 
 #include "grpc_layer/analytics_service_impl.h"
 #include "grpc_layer/detection_queue.h"
+#include "ffmpeg_log.h"
 #include "logging.h"
 #include "roi/roi_file_job.h"
 #include "watch_manager.h"
@@ -294,6 +295,11 @@ int run_roi_cli(const std::vector<std::string>& args)
 
 int main(int argc, char** argv)
 {
+  // Before anything can open a demuxer: FFmpeg's own messages are worth keeping, so they go
+  // through spdlog from here on rather than raw stderr -- with a repeat of the same message
+  // collapsed to one line every few seconds.
+  install_ffmpeg_log_bridge();
+
   const std::vector<std::string> args(argv + 1, argv + argc);
   for (const auto& a : args)
   {
@@ -320,7 +326,7 @@ int main(int argc, char** argv)
       queue->push(queued_detection{ watch_id, det });
     });
 
-  analytics_service_impl service(watches, queue);
+  analytics_service_impl service(watches, queue, model_dir);
 
   const std::string server_address = "0.0.0.0:" + grpc_port;
   grpc::ServerBuilder builder;

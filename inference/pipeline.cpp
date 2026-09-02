@@ -11,7 +11,7 @@
 #include "plate_detector.h"
 #include "plate_ocr.h"
 #include "tracker.h"
-#include "person_embedder.h"
+#include "appearance_embedder.h"
 #include "../crop_encoder.h"
 #include "../logging.h"
 
@@ -46,6 +46,18 @@ bbox_t to_full_frame(const bbox_t& parent, const bbox_t& child)
 // covers bumper overhang when the primary vehicle box is tight on the body.
 constexpr float kPlateContextMargin = 0.5f;
 
+// Face/plate detections share a parent track_id (or 0). Quantize the box so two faces on the
+// same person, or two unassociated plates, keep separate cache slots while still rate-limiting
+// each one the way person/vehicle tracks do.
+int64_t bbox_slot(const bbox_t& box)
+{
+  auto q = [](float v) -> int64_t
+  {
+    return static_cast<int64_t>(std::clamp(v, 0.0f, 1.0f) * 32.0f);
+  };
+  return (q(box.x) << 15) | (q(box.y) << 10) | (q(box.width) << 5) | q(box.height);
+}
+
 // Grow the box by `margin` of its own size on every side, clamped to the frame. Clamping means a
 // vehicle at the edge simply gets less context on that side rather than a box hanging outside the
 // picture.
@@ -73,7 +85,10 @@ pipeline::pipeline(pipeline_config config, const std::string& model_dir)
   , m_plate(std::make_unique<plate_detector>(model_dir + "/plate_detector"))
   , m_ocr(std::make_unique<plate_ocr>(model_dir + "/plate_ocr"))
   , m_tracker(std::make_unique<tracker>())
-  , m_person_embed(std::make_unique<person_embedder>(model_dir + "/person_embedder"))
+  , m_person_embed(std::make_unique<appearance_embedder>("person_embedder", model_dir + "/person_embedder"))
+  , m_face_embed(std::make_unique<appearance_embedder>("face_embedder", model_dir + "/face_embedder"))
+  , m_vehicle_embed(std::make_unique<appearance_embedder>("vehicle_embedder", model_dir + "/vehicle_embedder"))
+  , m_plate_embed(std::make_unique<appearance_embedder>("plate_embedder", model_dir + "/plate_embedder"))
 {
 }
 
@@ -138,6 +153,34 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
 
   const auto tracked = m_tracker->update(filtered);
 
+  std::unordered_set<track_key, track_key_hash> live_embed;
+  auto maybe_embed_cached = [&](detection_kind kind, int64_t track_id, const bbox_t& bbox,
+                                appearance_embedder* embedder, final_detection& out)
+  {
+    if (embedder == nullptr || !embedder->loaded())
+      return;
+
+    const int64_t slot = (kind == detection_kind::face || kind == detection_kind::license_plate)
+      ? bbox_slot(bbox) : 0;
+    const auto now = std::chrono::steady_clock::now();
+    const track_key key{ .kind = kind, .track_id = track_id, .slot = slot };
+    live_embed.insert(key);
+    auto& cached = m_track_embed[key];
+    const bool due = cached.value.empty() ||
+      now - cached.computed_at >= std::chrono::seconds(m_config.reid_embed_interval_sec);
+    if (due)
+    {
+      auto fresh = embedder->embed(frame, bbox);
+      if (!fresh.empty())
+      {
+        cached.value = std::move(fresh);
+        cached.computed_at = now;
+        out.embedding_is_fresh = true;
+      }
+    }
+    out.embedding = cached.value;
+  };
+
   for (const auto& t : tracked)
   {
     if (t.kind == detection_kind::person)
@@ -162,32 +205,10 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
         // Recompute a re-id embedding on the track's first frame (START) and then at most once per
         // reid_embed_interval_sec — enough for the downstream matcher to re-identify the object
         // without paying an embed on every sampled frame.
-        if (m_person_embed->loaded())
-        {
-          const auto now = std::chrono::steady_clock::now();
-          auto& slot = m_track_embed[t.track_id];
-          const bool due = slot.value.empty() ||
-            now - slot.computed_at >= std::chrono::seconds(m_config.reid_embed_interval_sec);
-          if (due)
-          {
-            auto fresh = m_person_embed->embed(frame, t.bbox);
-            if (!fresh.empty())
-            {
-              slot.value = std::move(fresh);
-              slot.computed_at = now;
-              out.embedding_is_fresh = true; // computed this frame -> a real new observation
-            }
-          }
-
-          // The *inference* is rate-limited, but the vector is re-sent on every frame of the track
-          // rather than only on the frame it was computed on. detection_queue is bounded
-          // drop-oldest, so an emit carrying a once-per-interval field can vanish and the track
-          // would then carry no embedding for a full interval — permanently, for the common case
-          // of a track shorter than one interval. Every other field already self-heals this way.
-          // embedding_is_fresh (set above only when recomputed) lets the consumer record a gallery
-          // sighting once per real observation rather than once per carried-along frame.
-          out.embedding = slot.value;
-        }
+        // The inference is rate-limited per live track, while the last computed vector is emitted
+        // on every frame of that track. This keeps short tracks searchable even if one queue item
+        // is dropped.
+        maybe_embed_cached(detection_kind::person, t.track_id, t.bbox, m_person_embed.get(), out);
         emit(out);
       }
 
@@ -209,6 +230,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
             .crop_jpeg = encode_crop_jpeg(crop_region(person_crop, f.bbox)),
             .embedding = {},
           };
+          maybe_embed_cached(detection_kind::face, t.track_id, out.bbox, m_face_embed.get(), out);
           emit(out);
         }
       }
@@ -230,6 +252,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
         };
         if (m_config.attach_debug_crops)
           out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));
+        maybe_embed_cached(detection_kind::vehicle, t.track_id, t.bbox, m_vehicle_embed.get(), out);
         emit(out);
       }
 
@@ -275,6 +298,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
         .crop_jpeg = encode_crop_jpeg(plate_crop),
         .embedding = {},
       };
+      maybe_embed_cached(detection_kind::license_plate, track_id, p.bbox, m_plate_embed.get(), out);
       if (ocr)
       {
         out.recognized_text = ocr->text;
@@ -284,15 +308,11 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
     }
   }
 
-  // Prune cached per-track embeddings down to the tracks seen this frame — the IoU tracker drops
-  // unmatched tracks immediately, so anything absent here is gone and must not leak.
+  // Prune cached embeddings down to the keys used this frame — the IoU tracker drops unmatched
+  // tracks immediately, and face/plate slots are not in that set (they share a parent track_id).
   if (!m_track_embed.empty())
   {
-    std::unordered_set<int64_t> live;
-    live.reserve(tracked.size());
-    for (const auto& t : tracked)
-      live.insert(t.track_id);
     for (auto it = m_track_embed.begin(); it != m_track_embed.end();)
-      it = live.contains(it->first) ? std::next(it) : m_track_embed.erase(it);
+      it = live_embed.contains(it->first) ? std::next(it) : m_track_embed.erase(it);
   }
 }
