@@ -13,8 +13,9 @@ enum class detection_kind {
   license_plate,
 };
 
-// Normalized (0..1) bounding box, relative to whatever frame it was produced against — full
-// frame for primary_detector results, the parent crop's coordinate space for face/plate results.
+// Normalized (0..1) bounding box relative to the full frame for primary/plate results, or
+// relative to the parent person crop for raw face_detector output (composed to full-frame in
+// the pipeline before emit).
 struct bbox_t {
   float x = 0;
   float y = 0;
@@ -39,8 +40,8 @@ struct final_detection {
   int64_t track_id = 0;
   detection_kind kind = detection_kind::person;
   float confidence = 0.0f;
-  // Always normalized to the FULL frame (0..1), for every kind — face/plate bboxes are composed
-  // back from their parent crop's space before ending up here (see pipeline::to_full_frame).
+  // Always normalized to the FULL frame (0..1), for every kind — face bboxes are composed back
+  // from their parent person-crop space before ending up here; plates are already full-frame.
   bbox_t bbox;
   std::chrono::system_clock::time_point detected_at;
   std::optional<std::string> recognized_text;

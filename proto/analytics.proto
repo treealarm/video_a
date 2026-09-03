@@ -19,6 +19,8 @@ service AnalyticsService {
   rpc StopWatch(StopWatchRequest) returns (OperationStatus);
   rpc StreamDetections(StreamDetectionsRequest) returns (stream DetectionEvent);
   rpc EmbedImage(EmbedImageRequest) returns (EmbedImageResponse);
+  // Stateless background-motion estimate between two JPEG snapshots. Used by PTZ calibration.
+  rpc EstimateGlobalMotion(EstimateGlobalMotionRequest) returns (EstimateGlobalMotionResponse);
 }
 
 enum DetectionKind {
@@ -136,4 +138,20 @@ message EmbedImageResponse {
   string message = 2;
   repeated float embedding = 3;
   optional BoundingBox bbox = 4;
+}
+
+message EstimateGlobalMotionRequest {
+  bytes before_jpeg = 1;
+  bytes after_jpeg = 2;
+}
+
+message EstimateGlobalMotionResponse {
+  bool success = 1;
+  string message = 2;
+  // Normalized image-space shift: positive dx means the scene moved right in the frame.
+  float dx = 3;
+  float dy = 4;
+  // Estimated roll in radians (positive = clockwise). May be zero when only translation fits.
+  float rotation = 5;
+  float confidence = 6;
 }

@@ -9,6 +9,7 @@
 
 #include "detection.h"
 #include "frame_sampler.h"
+#include "global_motion.h"
 
 class primary_detector;
 class face_detector;
@@ -88,4 +89,13 @@ private:
   // map has not been embedded yet (its next frame is treated as START). Pruned to the
   // currently-tracked set each frame so it can't leak as track ids churn.
   std::unordered_map<track_key, track_embedding, track_key_hash> m_track_embed;
+
+  // ── Motion gate ──────────────────────────────────────────────────────────
+  // When the scene shifts more than this (normalized), the frame is dropped wholesale: YOLO on a
+  // slewing/blurred picture invents background boxes, and IoU cannot keep a track_id across an
+  // 8%+ pan anyway. The previous track set is left intact so the next quiet frame can rematch.
+  // Configurable via ANALYTICS_MOTION_GATE_THRESHOLD.
+  float m_motion_gate_threshold = 0.08f;
+  // Previous coarse grayscale grid (~14 KB), not a full BGR frame copy.
+  std::vector<float> m_prev_motion_grid;
 };

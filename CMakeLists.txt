@@ -82,6 +82,8 @@ set(SOURCES
     inference/appearance_embedder.h
     inference/pipeline.cpp
     inference/pipeline.h
+    inference/global_motion.cpp
+    inference/global_motion.h
 )
 
 add_executable(analytics-worker ${SOURCES})

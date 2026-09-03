@@ -21,6 +21,7 @@ extern "C" {
 #include "../inference/detection.h"
 #include "../inference/face_detector.h"
 #include "../inference/frame_sampler.h"
+#include "../inference/global_motion.h"
 #include "../inference/plate_detector.h"
 #include "../inference/primary_detector.h"
 #include "../interfaces/av_deleters.h"
@@ -478,6 +479,56 @@ grpc::Status analytics_service_impl::EmbedImage(
     log()->error("EmbedImage: {}", ex.what());
     response->set_success(false);
     response->set_message("embedding failed");
+    return grpc::Status::OK;
+  }
+}
+
+grpc::Status analytics_service_impl::EstimateGlobalMotion(
+  grpc::ServerContext* context,
+  const analytics::EstimateGlobalMotionRequest* request,
+  analytics::EstimateGlobalMotionResponse* response)
+{
+  (void)context;
+  if (request->before_jpeg().empty() || request->after_jpeg().empty())
+  {
+    response->set_success(false);
+    response->set_message("both jpeg frames are required");
+    return grpc::Status::OK;
+  }
+
+  try
+  {
+    auto before = decode_jpeg(request->before_jpeg());
+    auto after = decode_jpeg(request->after_jpeg());
+    if (!before || !after)
+    {
+      response->set_success(false);
+      response->set_message("jpeg decode failed");
+      return grpc::Status::OK;
+    }
+
+    const auto motion = estimate_global_motion(*before, *after);
+    if (!motion)
+    {
+      response->set_success(false);
+      response->set_message("motion estimation failed");
+      return grpc::Status::OK;
+    }
+
+    response->set_success(true);
+    response->set_dx(motion->dx);
+    response->set_dy(motion->dy);
+    response->set_rotation(motion->rotation);
+    response->set_confidence(motion->confidence);
+    return grpc::Status::OK;
+  }
+  catch (const std::exception& ex)
+  {
+    // Same guard as EmbedImage: decode_jpeg can allocate tens of MB, and an escaping exception
+    // on the gRPC sync-server thread would std::terminate the worker and every active watch.
+    log()->error("EstimateGlobalMotion: {}", ex.what());
+    response->set_success(false);
+    response->set_message("motion estimation failed");
     return grpc::Status::OK;
   }
 }

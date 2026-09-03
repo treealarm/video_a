@@ -1,6 +1,8 @@
 #include "pipeline.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -28,9 +30,8 @@ const char* kind_name(detection_kind kind)
   return "unknown";
 }
 
-// Face/plate detectors run on the parent crop, so their bbox is normalized relative to that crop,
-// not the full frame. Compose it back into full-frame normalized coordinates so every emitted
-// detection is in the same (full-frame) space — the consumer draws them all on the full frame.
+// Face detector runs on the parent person crop, so its bbox is normalized relative to that crop.
+// Compose it back into full-frame coordinates so every emitted detection is in the same space.
 bbox_t to_full_frame(const bbox_t& parent, const bbox_t& child)
 {
   return bbox_t{
@@ -76,6 +77,18 @@ bool contains_center(const bbox_t& box, const bbox_t& inner)
   const float cy = inner.y + inner.height * 0.5f;
   return cx >= box.x && cx <= box.x + box.width && cy >= box.y && cy <= box.y + box.height;
 }
+
+// Minimum confidence from the motion estimator before the gate trusts the answer. A flat /
+// saturated-null result has confidence 0 and must not suppress a quiet scene.
+constexpr float kMotionGateMinConfidence = 0.15f;
+}
+
+static float motion_gate_threshold_from_env()
+{
+  const char* v = std::getenv("ANALYTICS_MOTION_GATE_THRESHOLD");
+  if (!v) return 0.08f;
+  try { return std::clamp(std::stof(v), 0.0f, 1.0f); }
+  catch (...) { return 0.08f; }
 }
 
 pipeline::pipeline(pipeline_config config, const std::string& model_dir)
@@ -89,6 +102,7 @@ pipeline::pipeline(pipeline_config config, const std::string& model_dir)
   , m_face_embed(std::make_unique<appearance_embedder>("face_embedder", model_dir + "/face_embedder"))
   , m_vehicle_embed(std::make_unique<appearance_embedder>("vehicle_embedder", model_dir + "/vehicle_embedder"))
   , m_plate_embed(std::make_unique<appearance_embedder>("plate_embedder", model_dir + "/plate_embedder"))
+  , m_motion_gate_threshold(motion_gate_threshold_from_env())
 {
 }
 
@@ -151,7 +165,38 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
       filtered.push_back(d);
   }
 
-  const auto tracked = m_tracker->update(filtered);
+  // ── Motion gate ──────────────────────────────────────────────────────────
+  // When the camera is panning, YOLO invents boxes on the blurred background. IoU cannot keep a
+  // track_id across an 8%+ scene shift either (the box moves more than its own width), so the
+  // old "suppress_new but keep matching tracks" idea emptied the track set on the first gated
+  // frame and then dropped everything until the pan stopped. The honest answer: skip the whole
+  // frame — leave the tracker's previous set untouched, emit nothing, rematch on the next quiet
+  // sample. Offline ROI footage loses boxes for the duration of a pan; that is preferable to
+  // archiving background false positives.
+  const auto curr_grid = grayscale_motion_grid(frame);
+  bool scene_moving = false;
+  if (!m_prev_motion_grid.empty() && !curr_grid.empty())
+  {
+    if (const auto motion = estimate_global_motion(m_prev_motion_grid, curr_grid);
+        motion && motion->confidence >= kMotionGateMinConfidence)
+    {
+      const float shift = std::hypot(motion->dx, motion->dy);
+      if (motion->saturated || shift > m_motion_gate_threshold)
+      {
+        scene_moving = true;
+        log()->debug(
+          "pipeline: motion gate triggered shift={:.3f} saturated={} confidence={:.2f} (threshold={:.3f})",
+          shift, motion->saturated, motion->confidence, m_motion_gate_threshold);
+      }
+    }
+  }
+  if (!curr_grid.empty())
+    m_prev_motion_grid = curr_grid;
+
+  // Gated: do not call update — an empty update would wipe m_tracks; we want them frozen.
+  const auto tracked = scene_moving
+    ? std::vector<tracked_detection>{}
+    : m_tracker->update(filtered);
 
   std::unordered_set<track_key, track_key_hash> live_embed;
   auto maybe_embed_cached = [&](detection_kind kind, int64_t track_id, const bbox_t& bbox,
@@ -214,6 +259,9 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
 
       if (wants(detection_kind::face))
       {
+        // Run on the person crop, not the full frame: face-detection-0205 point-samples into a
+        // fixed 416×416 with no letterbox, so a small face on a 1080p frame becomes a few pixels
+        // and is missed. The crop upscales the face enough for the model; compose coords back.
         const auto person_crop = crop_region(frame, t.bbox);
         for (const auto& f : m_face->infer(person_crop))
         {

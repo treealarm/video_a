@@ -17,7 +17,12 @@ class face_detector {
 public:
   explicit face_detector(const std::string& model_path);
 
-  // Returned bboxes are normalized 0..1 relative to the person crop.
+  // Face detection on PERSON-track crops (see project plan A.5). Model: OMZ face-detection-0205
+  // (FCOS head with integrated NMS; input 1x3x416x416 BGR 0..255, outputs "boxes" [N,5] =
+  // x_min,y_min,x_max,y_max,confidence in input pixels + "labels" [N]). Falls back to stub mode
+  // (always empty) when no model file is present at {model_path}.[onnx|xml].
+  // Returned bboxes are normalized 0..1 relative to the person crop; the pipeline composes them
+  // into full-frame coordinates before emit.
   std::vector<raw_detection> infer(const decoded_frame& person_crop);
 
 private:

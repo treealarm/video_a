@@ -43,6 +43,11 @@ public:
     const analytics::EmbedImageRequest* request,
     analytics::EmbedImageResponse* response) override;
 
+  grpc::Status EstimateGlobalMotion(
+    grpc::ServerContext* context,
+    const analytics::EstimateGlobalMotionRequest* request,
+    analytics::EstimateGlobalMotionResponse* response) override;
+
 private:
   std::shared_ptr<watch_manager> m_watches;
   std::shared_ptr<detection_queue> m_queue;
