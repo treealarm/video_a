@@ -1,6 +1,7 @@
 #include "pipeline.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -83,11 +84,25 @@ bool contains_center(const bbox_t& box, const bbox_t& inner)
 constexpr float kMotionGateMinConfidence = 0.15f;
 }
 
+// A threshold no clamped value can take, so "disabled" is distinguishable from "gate on the
+// slightest motion" (0.0) as well as from "gate almost never" (1.0).
+constexpr float kMotionGateOff = -1.0f;
+
 static float motion_gate_threshold_from_env()
 {
   const char* v = std::getenv("ANALYTICS_MOTION_GATE_THRESHOLD");
   if (!v) return 0.08f;
-  try { return std::clamp(std::stof(v), 0.0f, 1.0f); }
+  // "off" rather than a number, because there is no number that means off: 0.0 gates every
+  // frame with any motion at all, and a threshold of 1.0 still leaves the saturated case --
+  // which is the one that fires on handheld footage. Without this the gate cannot be turned
+  // off, and a clip shot from the hand comes back with almost no detections and no way to
+  // find out why.
+  std::string text(v);
+  std::transform(text.begin(), text.end(), text.begin(),
+    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (text == "off" || text == "none" || text == "false")
+    return kMotionGateOff;
+  try { return std::clamp(std::stof(text), 0.0f, 1.0f); }
   catch (...) { return 0.08f; }
 }
 
@@ -175,7 +190,8 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
   // archiving background false positives.
   const auto curr_grid = grayscale_motion_grid(frame);
   bool scene_moving = false;
-  if (!m_prev_motion_grid.empty() && !curr_grid.empty())
+  if (m_motion_gate_threshold != kMotionGateOff
+    && !m_prev_motion_grid.empty() && !curr_grid.empty())
   {
     if (const auto motion = estimate_global_motion(m_prev_motion_grid, curr_grid);
         motion && motion->confidence >= kMotionGateMinConfidence)
@@ -184,6 +200,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
       if (motion->saturated || shift > m_motion_gate_threshold)
       {
         scene_moving = true;
+        ++m_gated_frames;
         log()->debug(
           "pipeline: motion gate triggered shift={:.3f} saturated={} confidence={:.2f} (threshold={:.3f})",
           shift, motion->saturated, motion->confidence, m_motion_gate_threshold);

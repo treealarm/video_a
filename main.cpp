@@ -64,12 +64,16 @@ void print_roi_usage()
 {
   std::fprintf(stderr,
     "usage: analytics-worker --roi-file INPUT --roi-grpc HOST:PORT [options]\n"
+    "       analytics-worker --roi-file INPUT --detect-only [options]\n"
     "\n"
     "  Decodes INPUT, detects what is in it, and re-encodes it through roi-transcode-svc\n"
     "  spending the bits on the detected objects. Writes the video and a sidecar of the\n"
     "  regions that were asked for, which roi_transcode's integration/scripts/boxes-to-ass.py\n"
     "  turns into subtitles any player can draw over the result.\n"
     "\n"
+    "  --detect-only          detect and write the sidecar only; no encoder, no --roi-grpc,\n"
+    "                         and --regions stays boxes because the other forms are built\n"
+    "                         on the way to the wire\n"
     "  --out PATH             output video (default: INPUT with .roi.mp4)\n"
     "  --boxes PATH           regions sidecar (default: INPUT with .boxes.json; '-' skips)\n"
     "  --detect-fps N         inference passes per second of content, 0 = every frame (2)\n"
@@ -165,6 +169,7 @@ int run_roi_cli(const std::vector<std::string>& args)
     const std::string* v = nullptr;
 
     if (a == "--roi-file")            { if (!(v = need_value(i))) return 2; cfg.input_path = *v; }
+    else if (a == "--detect-only")    { cfg.detect_only = true; }
     else if (a == "--roi-grpc")       { if (!(v = need_value(i))) return 2; cfg.encode.target = *v; }
     else if (a == "--out")            { if (!(v = need_value(i))) return 2; out_path = *v; }
     else if (a == "--boxes")          { if (!(v = need_value(i))) return 2; boxes_path = *v; }
@@ -251,10 +256,25 @@ int run_roi_cli(const std::vector<std::string>& args)
     }
   }
 
-  if (cfg.input_path.empty() || cfg.encode.target.empty())
+  if (cfg.input_path.empty() || (cfg.encode.target.empty() && !cfg.detect_only))
   {
     print_roi_usage();
     return 2;
+  }
+  if (cfg.detect_only)
+  {
+    // Both of these would be a pass that produces nothing: the sidecar is the only output this
+    // mode has, and mask/qp_map are painted on the way to the encoder that is not there.
+    if (boxes_path == "-")
+    {
+      std::fprintf(stderr, "--detect-only writes the sidecar; --boxes - leaves no output\n");
+      return 2;
+    }
+    if (cfg.regions != roi_region_form::boxes)
+    {
+      std::fprintf(stderr, "--detect-only supports --regions boxes only\n");
+      return 2;
+    }
   }
   if (cfg.classes.empty())
   {
@@ -263,8 +283,13 @@ int run_roi_cli(const std::vector<std::string>& args)
   }
 
   cfg.input_path = absolute_path(cfg.input_path);
-  cfg.encode.output_path = absolute_path(
-    out_path.empty() ? default_sibling(cfg.input_path, ".roi.mp4") : out_path);
+  // Named only when something will be written there. In --detect-only the default would put a
+  // path to a file that is never created into the sidecar's "output" field.
+  if (!cfg.detect_only)
+  {
+    cfg.encode.output_path = absolute_path(
+      out_path.empty() ? default_sibling(cfg.input_path, ".roi.mp4") : out_path);
+  }
   if (boxes_path != "-")
   {
     cfg.boxes_json_path = absolute_path(

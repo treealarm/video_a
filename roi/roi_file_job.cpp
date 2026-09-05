@@ -301,6 +301,14 @@ private:
       ? static_cast<double>(m_frame_rate.num) / m_frame_rate.den
       : 0.0;
 
+    if (m_config.detect_only)
+    {
+      m_opened = true;
+      log()->info("roi job: detecting only, {}x{} @ {:.2f} fps -> {}", frame->width,
+        frame->height, m_sidecar.fps, m_config.boxes_json_path);
+      return true;
+    }
+
     std::string error;
     if (!m_client.open(m_config.encode, frame->width, frame->height,
           m_time_base.num, m_time_base.den, m_frame_rate.num, m_frame_rate.den,
@@ -352,6 +360,22 @@ private:
     uint8_t* dst[4] = { bgr.bgr.data(), nullptr, nullptr, nullptr };
     int lines[4] = { frame->width * 3, 0, 0, 0 };
     sws_scale(m_bgr_ctx.get(), frame->data, frame->linesize, 0, frame->height, dst, lines);
+
+    if (const char* dump = std::getenv("ROI_DEBUG_DUMP_BGR"))
+    {
+      static int n = 0;
+      if (n < 2)
+      {
+        std::string name = std::string(dump) + "/pass" + std::to_string(n) + ".ppm";
+        FILE* f = std::fopen(name.c_str(), "wb");
+        std::fprintf(f, "P6\n%d %d\n255\n", bgr.width, bgr.height);
+        for (size_t i = 0; i < bgr.bgr.size(); i += 3)
+        { std::fputc(bgr.bgr[i+2], f); std::fputc(bgr.bgr[i+1], f); std::fputc(bgr.bgr[i], f); }
+        std::fclose(f);
+        log()->info("roi job: dumped {} ({}x{}) at t={:.2f}", name, bgr.width, bgr.height, t);
+        ++n;
+      }
+    }
 
     m_held.clear();
     m_detector.process_frame(bgr, [this](const final_detection& det) {
@@ -635,6 +659,25 @@ private:
       run_detection(frame, t);
     if (m_failed) return;
 
+    // Without an encoder the frame is already spent: the detector has had it, the regions are
+    // recorded below, and YUV420P is the wire's format rather than the sidecar's.
+    if (m_config.detect_only)
+    {
+      m_sidecar.frames.push_back(sidecar_frame{ t, m_held });
+      ++m_frames_sent;
+      // Progress, because this is the one mode with nothing on the other end to report it: a
+      // minute of silence over a long clip cannot be told from a hang. Once per second of
+      // content, measured on the file's own timeline like everything else here.
+      constexpr double kProgressIntervalSec = 1.0;
+      if (t + 1e-9 >= m_next_progress_at)
+      {
+        log()->info("roi job: detected through t={:.2f} ({} frames, {} passes)", t,
+          m_frames_sent, m_detect_passes);
+        m_next_progress_at = t + kProgressIntervalSec;
+      }
+      return;
+    }
+
     if (!pack_yuv420p(frame)) return;
 
     // The encoder rejects a timeline that goes backwards, and a file with B-frames or a broken
@@ -729,6 +772,7 @@ private:
   bool m_opened = false;
   bool m_failed = false;
   int64_t m_frames_sent = 0;
+  double m_next_progress_at = 0;
   int64_t m_last_pts = 0;
 
   sidecar m_sidecar;
@@ -832,7 +876,9 @@ void match_source_encode_defaults(roi_encode_settings& settings, const std::stri
 bool run_roi_file_job(const roi_job_config& config)
 {
   roi_job_config cfg = config;
-  match_source_encode_defaults(cfg.encode, cfg.input_path);
+  // Reads the source to fill in codec and gop, which only the encoder uses.
+  if (!cfg.detect_only)
+    match_source_encode_defaults(cfg.encode, cfg.input_path);
 
   pipeline_config pcfg;
   pcfg.watch_id = "roi-file-job";
@@ -887,19 +933,30 @@ bool run_roi_file_job(const roi_job_config& config)
     return false;
   }
 
-  roi_encode_report report;
-  std::string error;
-  if (!client.finish(report, error))
+  if (cfg.detect_only)
   {
-    log()->error("roi job: the encoder ended badly: {}", error);
-    return false;
+    // The gated count belongs in this line rather than in a debug log: a gated pass emits
+    // nothing, so "few detections" and "few frames looked at" are different diagnoses and
+    // this is the only place that can tell them apart.
+    log()->info("roi job: {} frames decoded, {} detection passes, {} gated by motion, "
+      "nothing encoded", sink->frames_sent(), sink->detections_run(), detector.gated_frames());
   }
+  else
+  {
+    roi_encode_report report;
+    std::string error;
+    if (!client.finish(report, error))
+    {
+      log()->error("roi job: the encoder ended badly: {}", error);
+      return false;
+    }
 
-  log()->info("roi job: {} frames sent, {} detection passes, {} packets, {} bytes written{}",
-    sink->frames_sent(), sink->detections_run(), report.packets, report.bytes,
-    report.regions_dropped > 0
-      ? std::string(", ") + std::to_string(report.regions_dropped) + " regions dropped"
-      : std::string());
+    log()->info("roi job: {} frames sent, {} detection passes, {} packets, {} bytes written{}",
+      sink->frames_sent(), sink->detections_run(), report.packets, report.bytes,
+      report.regions_dropped > 0
+        ? std::string(", ") + std::to_string(report.regions_dropped) + " regions dropped"
+        : std::string());
+  }
 
   if (!cfg.boxes_json_path.empty())
   {

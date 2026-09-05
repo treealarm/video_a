@@ -44,6 +44,13 @@ struct roi_job_config {
 
   roi_encode_settings encode;
 
+  /// Detect and write the sidecar, with no encoder on the other end: nothing is connected to,
+  /// no frame is sent, and `encode` is unused except for what the sidecar records about the
+  /// input. It exists because the boxes are useful on their own -- roi_transcode's bench drives
+  /// its own encoder from them -- and demanding a gRPC service for a pass that only reads is a
+  /// dependency on a running server for no result it produces.
+  bool detect_only = false;
+
   roi_region_form regions = roi_region_form::boxes;
   /// How much smaller than the frame the mask is drawn. The encoder samples it onto a 32-pixel
   /// block grid, so anything finer than that is bytes on the wire for nothing.

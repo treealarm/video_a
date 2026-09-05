@@ -41,6 +41,11 @@ public:
 
   void process_frame(const decoded_frame& frame, const std::function<void(const final_detection&)>& emit);
 
+  /// How many frames the motion gate has skipped. A gated frame emits nothing at all, so a
+  /// caller reporting "no detections" has to be able to say whether anything was even looked
+  /// at -- on handheld footage this is most of them.
+  int64_t gated_frames() const { return m_gated_frames; }
+
 private:
   bool wants(detection_kind kind) const;
   static decoded_frame crop_region(const decoded_frame& frame, const bbox_t& bbox);
@@ -98,4 +103,5 @@ private:
   float m_motion_gate_threshold = 0.08f;
   // Previous coarse grayscale grid (~14 KB), not a full BGR frame copy.
   std::vector<float> m_prev_motion_grid;
+  int64_t m_gated_frames = 0;
 };

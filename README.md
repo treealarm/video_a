@@ -64,8 +64,15 @@ analytics-worker --roi-file clip.mp4 --roi-grpc 127.0.0.1:50061 \
 analytics-worker --help    # the rest of the knobs
 ```
 
-`roi_transcode/integration/scripts/roi-clip.sh` runs this together with the encoder service and a
-player, which is usually what you want.
+`--detect-only` is the same pass with nothing on the other end: decode, detect, write
+`*.boxes.json`, and never open a gRPC connection or an encoder. It needs the models and nothing
+else, which is what makes it usable from a machine that has no service running -- roi_transcode's
+bench (`integration/bench/serve.py`) drives its own encoder from the sidecar it writes.
+`--regions` stays `boxes` there: the mask and the qp_map grid are painted on the way to the wire.
+
+```bash
+analytics-worker --roi-file clip.mp4 --detect-only --boxes clip.boxes.json --detect-fps 2
+```
 
 `--regions qp_map` paints detections onto the encoder's coding-block QP grid on this side and
 sends that map over the stream (and optionally writes `*.qpmap.json`). Use it to exercise the
