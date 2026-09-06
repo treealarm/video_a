@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include <unordered_set>
 
@@ -188,27 +189,31 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
   // frame — leave the tracker's previous set untouched, emit nothing, rematch on the next quiet
   // sample. Offline ROI footage loses boxes for the duration of a pan; that is preferable to
   // archiving background false positives.
-  const auto curr_grid = grayscale_motion_grid(frame);
+  // Building the grid is a full-frame scan (~4 ms at 2688x1520), so it stays inside the gate's
+  // own branch: with the gate off nobody reads m_prev_motion_grid and the scan buys nothing.
   bool scene_moving = false;
-  if (m_motion_gate_threshold != kMotionGateOff
-    && !m_prev_motion_grid.empty() && !curr_grid.empty())
+  if (m_motion_gate_threshold != kMotionGateOff)
   {
-    if (const auto motion = estimate_global_motion(m_prev_motion_grid, curr_grid);
-        motion && motion->confidence >= kMotionGateMinConfidence)
+    auto curr_grid = grayscale_motion_grid(frame);
+    if (!m_prev_motion_grid.empty() && !curr_grid.empty())
     {
-      const float shift = std::hypot(motion->dx, motion->dy);
-      if (motion->saturated || shift > m_motion_gate_threshold)
+      if (const auto motion = estimate_global_motion(m_prev_motion_grid, curr_grid);
+          motion && motion->confidence >= kMotionGateMinConfidence)
       {
-        scene_moving = true;
-        ++m_gated_frames;
-        log()->debug(
-          "pipeline: motion gate triggered shift={:.3f} saturated={} confidence={:.2f} (threshold={:.3f})",
-          shift, motion->saturated, motion->confidence, m_motion_gate_threshold);
+        const float shift = std::hypot(motion->dx, motion->dy);
+        if (motion->saturated || shift > m_motion_gate_threshold)
+        {
+          scene_moving = true;
+          ++m_gated_frames;
+          log()->debug(
+            "pipeline: motion gate triggered shift={:.3f} saturated={} confidence={:.2f} (threshold={:.3f})",
+            shift, motion->saturated, motion->confidence, m_motion_gate_threshold);
+        }
       }
     }
+    if (!curr_grid.empty())
+      m_prev_motion_grid = std::move(curr_grid);
   }
-  if (!curr_grid.empty())
-    m_prev_motion_grid = curr_grid;
 
   // Gated: do not call update — an empty update would wipe m_tracks; we want them frozen.
   const auto tracked = scene_moving
