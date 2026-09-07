@@ -2,28 +2,50 @@
 #include "logging.h"
 
 #include <algorithm>
+#include <span>
 #include <vector>
 
 namespace {
-// Map deprecated JPEG-range pixel formats (YUVJ*) to their modern equivalents. Feeding a YUVJ
-// format to sws_getContext logs "deprecated pixel format used" on every frame; the full range is
-// signalled explicitly via sws_setColorspaceDetails instead.
-AVPixelFormat normalize_pixel_format(AVPixelFormat fmt, bool& full_range)
+// sve::PixelFormat back to the one swscale names. The library keeps its own enumeration so that
+// its public headers name no FFmpeg type; swscale is an FFmpeg call, so the translation has to
+// happen somewhere, and here is the only place this program makes it.
+//
+// The JPEG-range formats (YUVJ*) are not in the list because they never arrive: the decoder
+// normalises them to their limited-range twin and reports the range separately, through
+// DecodedFrameInfo::full_range. That is the same normalisation this file used to do itself --
+// feeding a YUVJ format to sws_getContext logs "deprecated pixel format used" on every frame --
+// only now it is done once, for every consumer of the library.
+AVPixelFormat to_av_pixel_format(sve::PixelFormat format)
 {
-  switch (fmt)
+  switch (format)
   {
-    case AV_PIX_FMT_YUVJ420P: full_range = true; return AV_PIX_FMT_YUV420P;
-    case AV_PIX_FMT_YUVJ422P: full_range = true; return AV_PIX_FMT_YUV422P;
-    case AV_PIX_FMT_YUVJ444P: full_range = true; return AV_PIX_FMT_YUV444P;
-    case AV_PIX_FMT_YUVJ440P: full_range = true; return AV_PIX_FMT_YUV440P;
-    default:                  full_range = false; return fmt;
+    case sve::PixelFormat::YUV420P: return AV_PIX_FMT_YUV420P;
+    case sve::PixelFormat::NV12:    return AV_PIX_FMT_NV12;
+    case sve::PixelFormat::YUV422P: return AV_PIX_FMT_YUV422P;
+    case sve::PixelFormat::YUV444P: return AV_PIX_FMT_YUV444P;
+    case sve::PixelFormat::GRAY8:   return AV_PIX_FMT_GRAY8;
+    case sve::PixelFormat::P010:    return AV_PIX_FMT_P010;
+    default:                        return AV_PIX_FMT_NONE;
+  }
+}
+
+sve::InputCodec to_input_codec(AVCodecID id)
+{
+  switch (id)
+  {
+    case AV_CODEC_ID_H264: return sve::InputCodec::H264;
+    case AV_CODEC_ID_HEVC: return sve::InputCodec::H265;
+    case AV_CODEC_ID_MJPEG: return sve::InputCodec::Jpeg;
+    default: return sve::InputCodec::Raw;
   }
 }
 }
 
-frame_sampler::frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps)
+frame_sampler::frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps,
+  sve::DecodeDevice device)
   : m_callback(std::move(callback))
   , m_emit_period(std::chrono::milliseconds(1000 / (sample_fps > 0 ? sample_fps : 1)))
+  , m_device(std::move(device))
 {
   m_worker = std::thread([this] { worker_loop(); });
 }
@@ -150,59 +172,61 @@ void frame_sampler::decode_packet(
 
   m_current_arrival = arrived_at;
 
-  if (avcodec_send_packet(m_decoder_ctx.get(), pkt.packet.get()) < 0)
-    return;
-
-  AVFrame* frame = av_frame_alloc();
-  if (!frame) return;
-
-  while (avcodec_receive_frame(m_decoder_ctx.get(), frame) == 0)
-  {
-    handle_decoded_frame(frame);
-    av_frame_unref(frame);
-  }
-  av_frame_free(&frame);
+  // The timestamp is handed over as the packet carries it. Nothing here reads it back -- frames
+  // are dated by m_current_arrival, for the reason that member documents -- but a decoder that is
+  // fed timestamps reorders correctly, and one that is fed nothing has to guess.
+  const sve::MediaTimestamp ts{ pkt.packet->pts, { 1, 90000 } };
+  const sve::Status status = m_decoder.Push(
+    { pkt.packet->data, static_cast<size_t>(pkt.packet->size) }, ts,
+    [this](const sve::Frame& frame, const sve::DecodedFrameInfo& info)
+    {
+      handle_decoded_frame(frame, info);
+    });
+  if (!status)
+    log()->warn("frame_sampler: decode failed: {}", status.message());
 }
 
 bool frame_sampler::ensure_decoder(const media_packet& pkt)
 {
-  if (m_decoder_ctx) return true;
-
+  if (m_decoder_open) return true;
   if (!pkt.codec_parameters) return false;
 
-  const AVCodec* codec = avcodec_find_decoder(pkt.codec_parameters->codec_id);
-  if (!codec)
+  const sve::InputCodec codec = to_input_codec(pkt.codec_parameters->codec_id);
+  if (codec == sve::InputCodec::Raw)
   {
-    log()->error("frame_sampler: no decoder for codec_id={}", static_cast<int>(pkt.codec_parameters->codec_id));
+    log()->error("frame_sampler: no decoder for codec_id={}",
+      static_cast<int>(pkt.codec_parameters->codec_id));
     return false;
   }
 
-  AVCodecContext* ctx = avcodec_alloc_context3(codec);
-  if (!ctx) return false;
+  const std::span<const uint8_t> extradata(
+    pkt.codec_parameters->extradata,
+    pkt.codec_parameters->extradata ? static_cast<size_t>(pkt.codec_parameters->extradata_size) : 0);
 
-  if (avcodec_parameters_to_context(ctx, pkt.codec_parameters.get()) < 0)
+  const sve::Status status = m_decoder.Open(codec, extradata, m_device);
+  if (!status)
   {
-    avcodec_free_context(&ctx);
+    log()->error("frame_sampler: decoder would not open: {}", status.message());
     return false;
   }
 
-  if (avcodec_open2(ctx, codec, nullptr) < 0)
-  {
-    avcodec_free_context(&ctx);
-    return false;
-  }
-
-  m_decoder_ctx.reset(ctx);
+  m_decoder_open = true;
   return true;
 }
 
-bool frame_sampler::ensure_sws_context(int width, int height, AVPixelFormat format)
+bool frame_sampler::ensure_sws_context(
+  int width, int height, sve::PixelFormat format, bool full_range)
 {
-  if (m_sws_ctx && width == m_sws_width && height == m_sws_height && format == m_sws_format)
+  if (m_sws_ctx && width == m_sws_width && height == m_sws_height && format == m_sws_format
+      && full_range == m_sws_full_range)
     return true;
 
-  bool full_range = false;
-  const AVPixelFormat src_format = normalize_pixel_format(format, full_range);
+  const AVPixelFormat src_format = to_av_pixel_format(format);
+  if (src_format == AV_PIX_FMT_NONE)
+  {
+    log()->error("frame_sampler: cannot convert {} to BGR24", sve::pixel_format_name(format));
+    return false;
+  }
 
   m_sws_ctx.reset(sws_getContext(
     width, height, src_format,
@@ -220,20 +244,32 @@ bool frame_sampler::ensure_sws_context(int width, int height, AVPixelFormat form
 
   m_sws_width = width;
   m_sws_height = height;
-  m_sws_format = format; // cache on the ORIGINAL format so the comparison above still matches
+  m_sws_format = format;
+  m_sws_full_range = full_range;
   return true;
 }
 
-void frame_sampler::handle_decoded_frame(AVFrame* frame)
+void frame_sampler::handle_decoded_frame(
+  const sve::Frame& frame, const sve::DecodedFrameInfo& info)
 {
   if (!m_callback) return;
-  if (frame->width <= 0 || frame->height <= 0) return;
+  if (!frame) return;
+
+  if (!m_path_reported)
+  {
+    m_path_reported = true;
+    log()->info("frame_sampler: decoding {} on {}", m_decoder.decoder_name(),
+      m_decoder.hardware_name().empty() ? "cpu" : m_decoder.hardware_name());
+  }
 
   // The schedule, applied in both modes so that sample_fps means the same thing whichever one is
   // running -- in full decode it is what makes most decoded frames free, and in keyframe-only it
   // stops a stream that keys faster than asked from running inference more often than asked.
   //
-  // Tested before the colour conversion below, which is the expensive part of this function.
+  // Tested before anything else in this function, and on a hardware device that ordering is worth
+  // more than it used to be: everything below -- the transfer back from the GPU as well as the
+  // colour conversion -- is skipped for a frame the schedule does not want, so a stream decoded in
+  // full at 25 frames a second crosses the bus once a second.
   //
   // The tolerance matters more than it looks. A camera keying once a second against a one-second
   // period lands a few milliseconds early as often as late, and a bare `>= period` would reject
@@ -250,23 +286,43 @@ void frame_sampler::handle_decoded_frame(AVFrame* frame)
   if (m_next_emit < now)
     m_next_emit = now + m_emit_period;  // fell behind (a stall, a reconnect) -- resync rather than burst
 
-  if (!ensure_sws_context(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format)))
+  // Into system memory, if it is not there already. A frame decoded on the CPU comes back
+  // unchanged and costs nothing here.
+  sve::Result<sve::Frame> readable = m_decoder.Download(frame);
+  if (!readable)
+  {
+    log()->warn("frame_sampler: {}", readable.status().message());
+    return;
+  }
+  sve::IFrameBuffer& pixels = readable.value().mutable_buffer();
+  if (pixels.width() <= 0 || pixels.height() <= 0) return;
+
+  if (!ensure_sws_context(pixels.width(), pixels.height(), pixels.format(), info.full_range))
     return;
 
   decoded_frame out;
-  out.width = frame->width;
-  out.height = frame->height;
-  out.bgr.resize(static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height) * 3);
+  out.width = pixels.width();
+  out.height = pixels.height();
+  out.bgr.resize(static_cast<size_t>(out.width) * static_cast<size_t>(out.height) * 3);
   // The packet's arrival, not the clock now: see m_current_arrival. Falls back to now() only if a
   // frame somehow reaches here without a packet having been decoded, which nothing does today.
   out.captured_at = m_current_arrival.time_since_epoch().count() != 0
     ? m_current_arrival
     : std::chrono::system_clock::now();
 
-  uint8_t* dst_data[4] = { out.bgr.data(), nullptr, nullptr, nullptr };
-  int dst_linesize[4] = { frame->width * 3, 0, 0, 0 };
+  const uint8_t* src_data[4] = {};
+  int src_linesize[4] = {};
+  for (int i = 0; i < 4; ++i)
+  {
+    const sve::PlaneView plane = pixels.plane(i);
+    src_data[i] = plane.empty() ? nullptr : plane.bytes.data();
+    src_linesize[i] = plane.stride;
+  }
 
-  sws_scale(m_sws_ctx.get(), frame->data, frame->linesize, 0, frame->height, dst_data, dst_linesize);
+  uint8_t* dst_data[4] = { out.bgr.data(), nullptr, nullptr, nullptr };
+  int dst_linesize[4] = { out.width * 3, 0, 0, 0 };
+
+  sws_scale(m_sws_ctx.get(), src_data, src_linesize, 0, out.height, dst_data, dst_linesize);
 
   m_callback(out);
 }

@@ -11,10 +11,9 @@
 #include <vector>
 
 #include "interfaces/media_sink.h"
-#include "interfaces/av_deleters.h"
+#include "sve/decoder.h"
 
 extern "C" {
-#include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 }
 
@@ -55,7 +54,12 @@ class frame_sampler final : public media_sink {
 public:
   // sample_fps is the target rate; 0 is read as 1. It bounds how often a decoded frame is handed
   // on, and decides which decode mode the measured keyframe spacing has to beat.
-  frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps);
+  //
+  // `device` says where the decoding runs. Taken by value because sve::DecodeDevice is a shared
+  // handle: every sampler in the process holds the same device and none of them can outlive it.
+  // The default is the CPU, which is a device like any other here -- there is no null to check.
+  frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps,
+    sve::DecodeDevice device = sve::DecodeDevice::Cpu());
   ~frame_sampler() override;
 
   void on_packet(const std::shared_ptr<media_packet>& pkt) override;
@@ -66,8 +70,8 @@ private:
   void update_mode();
 
   bool ensure_decoder(const media_packet& pkt);
-  bool ensure_sws_context(int width, int height, AVPixelFormat format);
-  void handle_decoded_frame(AVFrame* frame);
+  bool ensure_sws_context(int width, int height, sve::PixelFormat format, bool full_range);
+  void handle_decoded_frame(const sve::Frame& frame, const sve::DecodedFrameInfo& info);
   void worker_loop();
   void decode_packet(const media_packet& pkt, std::chrono::system_clock::time_point arrived_at);
 
@@ -127,8 +131,19 @@ private:
   std::chrono::system_clock::time_point m_current_arrival{};
 
   // Decoder/sws state is touched only by the worker thread — no locking needed.
-  using avcodec_context_ptr = std::unique_ptr<AVCodecContext, avcodec_context_deleter>;
-  avcodec_context_ptr m_decoder_ctx;
+  //
+  // Decoding goes through the encoder library rather than through libavcodec directly, because
+  // that is where hardware decode lives and there is no reason for a second copy of it here. On a
+  // hardware device the frames stay on the GPU until the emit schedule below actually wants one:
+  // a stream that keys rarely is decoded in full at 25 frames a second and only the one frame a
+  // second that reaches inference is ever brought back across the bus.
+  sve::DecodeDevice m_device;
+  sve::VideoDecoder m_decoder;
+  bool m_decoder_open = false;
+  // Said once, when the first frame settles the negotiation. Which device was asked for is known
+  // at startup; which one libavcodec agreed to is not known until a frame comes out, and printing
+  // the intention is how a fallback to software goes unnoticed.
+  bool m_path_reported = false;
 
   struct sws_context_deleter {
     void operator()(SwsContext* ctx) const noexcept { if (ctx) sws_freeContext(ctx); }
@@ -136,5 +151,6 @@ private:
   std::unique_ptr<SwsContext, sws_context_deleter> m_sws_ctx;
   int m_sws_width = 0;
   int m_sws_height = 0;
-  AVPixelFormat m_sws_format = AV_PIX_FMT_NONE;
+  sve::PixelFormat m_sws_format = sve::PixelFormat::Unknown;
+  bool m_sws_full_range = false;
 };

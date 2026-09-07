@@ -51,6 +51,43 @@ int require_env_int(const char* name, int min_value, int max_value)
   return value;
 }
 
+// Where video decoding runs, and the one place that decides it.
+//
+// The value is a list, not a switch: "auto" ends in the CPU and therefore always opens, while a
+// named backend stands alone and a machine that cannot provide it fails to start. That is the
+// difference worth having -- a deployment that asked for hardware and quietly got software is the
+// failure this whole exercise exists to make visible, and it looks from the outside exactly like
+// a service that merely burns CPU.
+sve::DecodeDevice open_decode_device()
+{
+  const std::string choice = require_env("ANALYTICS_VIDEO_DECODER");
+
+  sve::DecodeSelection selection;
+  try
+  {
+    selection = sve::decode_selection_from_name(choice);
+  }
+  catch (const std::exception& e)
+  {
+    log()->critical("ANALYTICS_VIDEO_DECODER: {}", e.what());
+    std::exit(1);
+  }
+
+  sve::Result<sve::DecodeDevice> opened = sve::DecodeDevice::Open(selection);
+  if (!opened)
+  {
+    log()->critical("ANALYTICS_VIDEO_DECODER={}: {}", choice, opened.status().message());
+    std::exit(1);
+  }
+
+  // Said whether or not anything was skipped, and said before the first frame: which device was
+  // asked for is knowable now, which decoder libavcodec then agrees to is not (see frame_sampler).
+  for (const std::string& skipped : opened.value().skipped())
+    log()->info("video decoder: passed over {}", skipped);
+  log()->info("video decoder: {}", opened.value().name());
+  return opened.value();
+}
+
 // ---------------------------------------------------------------------------
 // One-shot ROI pass over a file
 //
@@ -349,7 +386,8 @@ int main(int argc, char** argv)
     [queue](const std::string& watch_id, const final_detection& det)
     {
       queue->push(queued_detection{ watch_id, det });
-    });
+    },
+    open_decode_device());
 
   analytics_service_impl service(watches, queue, model_dir);
 
