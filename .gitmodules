@@ -1,4 +1,4 @@
 [submodule "sve"]
 	path = sve
 	url = git@github.com:treealarm/roi_transcode.git
-	branch = hw-decode-api
+	branch = main

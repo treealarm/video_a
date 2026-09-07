@@ -175,7 +175,7 @@ void frame_sampler::decode_packet(
   // The timestamp is handed over as the packet carries it. Nothing here reads it back -- frames
   // are dated by m_current_arrival, for the reason that member documents -- but a decoder that is
   // fed timestamps reorders correctly, and one that is fed nothing has to guess.
-  const sve::MediaTimestamp ts{ pkt.packet->pts, { 1, 90000 } };
+  const sve::MediaTimestamp ts{ pkt.packet->pts, { pkt.time_base.num, pkt.time_base.den } };
   const sve::Status status = m_decoder.Push(
     { pkt.packet->data, static_cast<size_t>(pkt.packet->size) }, ts,
     [this](const sve::Frame& frame, const sve::DecodedFrameInfo& info)
