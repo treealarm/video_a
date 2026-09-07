@@ -178,6 +178,27 @@ else()
   message(STATUS "OpenVINO CPU plugin is shared (loaded at runtime) — skipping --whole-archive link")
 endif()
 
+# The same for the iGPU, so ANALYTICS_DEVICE=GPU has a plugin to find. Inference is what this
+# service actually spends its time on -- decode moved to the video engine and turned out to be
+# noise beside it -- and the same chip that decodes can run the models.
+#
+# Linking it is not using it: the plugin talks to the GPU through OpenCL, so the *host* needs
+# Intel's compute runtime (intel-opencl-icd) as well. Without it there is no OpenCL device at all
+# and the plugin has nothing to bind to -- which is why the runtime image installs it and why a
+# device that was asked for and did not open is a startup failure rather than a stub.
+if(TARGET openvino::openvino_intel_gpu_plugin)
+  target_link_libraries(analytics-worker PRIVATE openvino::openvino_intel_gpu_plugin)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_link_options(analytics-worker PRIVATE
+      "LINKER:--whole-archive"
+      "$<TARGET_FILE:openvino::openvino_intel_gpu_plugin>"
+      "LINKER:--no-whole-archive"
+    )
+  endif()
+else()
+  message(STATUS "OpenVINO GPU plugin not present in this build — ANALYTICS_DEVICE=GPU will refuse")
+endif()
+
 target_compile_definitions(analytics-worker PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 target_compile_options(analytics-worker PRIVATE

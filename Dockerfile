@@ -36,13 +36,20 @@ FROM ubuntu:24.04
 # burns processor time -- and "the device is not passed through", "the group is wrong" and "the
 # driver did not load" look identical from outside, which is what vainfo is here to separate.
 #
+# intel-opencl-icd is the other half of the same chip: OpenVINO reaches the iGPU through OpenCL,
+# so ANALYTICS_DEVICE=GPU needs a vendor ICD and not only the plugin. Without it OpenVINO
+# enumerates CPU alone and the worker refuses to start, naming what it did find -- which is the
+# behaviour worth having, because inference is what this service actually spends its time on.
+#
 # /dev/dri passthrough is opt-in per host; a host that does not grant it leaves
-# ANALYTICS_VIDEO_DECODER=auto decoding in software, and says so in the log at startup.
+# ANALYTICS_VIDEO_DECODER=auto decoding in software, and says so in the log at startup. The same
+# passthrough is what GPU inference needs, so the two arrive together or not at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     intel-media-va-driver-non-free \
     libva2 \
     libva-drm2 \
     vainfo \
+    intel-opencl-icd \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

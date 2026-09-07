@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
+#include <openvino/openvino.hpp>
 
 #include "grpc_layer/analytics_service_impl.h"
 #include "grpc_layer/detection_queue.h"
@@ -58,6 +59,43 @@ int require_env_int(const char* name, int min_value, int max_value)
 // difference worth having -- a deployment that asked for hardware and quietly got software is the
 // failure this whole exercise exists to make visible, and it looks from the outside exactly like
 // a service that merely burns CPU.
+// The OpenVINO device the models run on, checked against what this build and this machine
+// actually have.
+//
+// Asked once, here, because of what the alternative did: every detector caught its own load
+// failure, logged a line and left itself a stub, so a worker configured for a device it could not
+// reach started up, ran, and found nothing -- indistinguishable from a quiet scene, and only one
+// error line at startup to say otherwise.
+//
+// GPU needs more than the plugin being linked. It reaches the iGPU through OpenCL, so the host or
+// the image has to carry Intel's compute runtime as well; get_available_devices() is the only
+// thing that knows whether all of that lined up.
+std::string require_inference_device()
+{
+  const std::string device = require_env("ANALYTICS_DEVICE");
+  std::string available;
+  try
+  {
+    ov::Core core;
+    for (const std::string& found : core.get_available_devices())
+    {
+      // A device may be enumerated with an index -- "GPU.0" for the integrated one. Asking for
+      // the family is how everyone writes it, so accept the prefix.
+      if (found == device || found.rfind(device + ".", 0) == 0)
+        return device;
+      available += available.empty() ? found : ", " + found;
+    }
+  }
+  catch (const std::exception& ex)
+  {
+    log()->critical("ANALYTICS_DEVICE='{}': {}", device, ex.what());
+    std::exit(1);
+  }
+  log()->critical("ANALYTICS_DEVICE='{}' is not available here; this build offers: {}",
+    device, available.empty() ? "nothing" : available);
+  std::exit(1);
+}
+
 sve::DecodeDevice open_decode_device()
 {
   const std::string choice = require_env("ANALYTICS_VIDEO_DECODER");
@@ -348,7 +386,7 @@ int run_roi_cli(const std::vector<std::string>& args)
   // Only what this mode actually uses. ANALYTICS_GRPC_PORT is deliberately not required: nothing
   // here listens, and demanding it would make an offline pass depend on a port it never binds.
   cfg.model_dir = require_env("ANALYTICS_MODEL_PATH");
-  require_env("ANALYTICS_DEVICE");
+  require_inference_device();
   cfg.reid_embed_interval_sec = require_env_int("ANALYTICS_REID_EMBED_INTERVAL_SEC", 1, 86400);
 
   return run_roi_file_job(cfg) ? 0 : 1;
@@ -371,9 +409,7 @@ int main(int argc, char** argv)
 
   const auto grpc_port = require_env("ANALYTICS_GRPC_PORT");
   const auto model_dir = require_env("ANALYTICS_MODEL_PATH");
-  // Reserved for future OpenVINO device selection (CPU/GPU) — validated now so a missing value
-  // is visible immediately, even though stub inference doesn't use it yet.
-  require_env("ANALYTICS_DEVICE");
+  require_inference_device();
   // How often (seconds) a still-live track recomputes its re-id embedding. The vector itself rides
   // along with every detection of the track; this only bounds the inference.
   const int reid_embed_interval_sec = require_env_int("ANALYTICS_REID_EMBED_INTERVAL_SEC", 1, 86400);
