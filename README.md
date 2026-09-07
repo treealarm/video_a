@@ -33,7 +33,17 @@ Requires these environment variables (see `.env`):
   512-d) are wired in; `plate_ocr` is still a stub that returns empty results, so plates are
   located but not read. A missing model file puts that detector into stub mode with a startup
   warning.
-- `ANALYTICS_DEVICE` — OpenVINO device selection (`CPU`/`GPU`).
+- `ANALYTICS_DEVICE` — OpenVINO device selection (`CPU`/`GPU`, or a virtual device such as
+  `AUTO`/`MULTI:GPU,CPU`). A real device is checked against `ov::Core::get_available_devices()` at
+  startup and a missing one is a startup failure, because a detector that cannot reach its device
+  is indistinguishable at runtime from a quiet scene. `GPU` needs Intel's OpenCL runtime
+  (`intel-opencl-icd`) as well as the plugin — the image carries it.
+- `ANALYTICS_VIDEO_DECODER` — where video is decoded: `auto`, `vaapi`, `qsv`, `nvdec` or `cpu`.
+  Not optional. `auto` walks the list and ends at the CPU, so it always starts and says in the log
+  which device it took and what it passed over; a named backend stands alone and a machine that
+  cannot provide it fails to start, which is the point — hardware that quietly became software
+  looks from the outside exactly like a service that merely burns CPU. Hardware decoding also
+  needs the render node passed into the container, see `docker-compose.gpu.yml.example`.
 - `ANALYTICS_REID_EMBED_INTERVAL_SEC` — how often (seconds, `1`..`86400`) a still-live person track
   recomputes its body re-id embedding. The embedding is computed on the track's first frame and
   re-sent with every detection of that track; this only bounds how often it is *recomputed*. Not

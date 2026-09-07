@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -52,13 +54,6 @@ int require_env_int(const char* name, int min_value, int max_value)
   return value;
 }
 
-// Where video decoding runs, and the one place that decides it.
-//
-// The value is a list, not a switch: "auto" ends in the CPU and therefore always opens, while a
-// named backend stands alone and a machine that cannot provide it fails to start. That is the
-// difference worth having -- a deployment that asked for hardware and quietly got software is the
-// failure this whole exercise exists to make visible, and it looks from the outside exactly like
-// a service that merely burns CPU.
 // The OpenVINO device the models run on, checked against what this build and this machine
 // actually have.
 //
@@ -73,6 +68,20 @@ int require_env_int(const char* name, int min_value, int max_value)
 std::string require_inference_device()
 {
   const std::string device = require_env("ANALYTICS_DEVICE");
+
+  // AUTO, MULTI, HETERO and BATCH are not devices and are never enumerated: they are policies
+  // that pick among the devices that are, and the family may carry the candidates after a colon
+  // ("MULTI:GPU,CPU"). Checking one of them against get_available_devices() would reject a
+  // configuration OpenVINO handles perfectly well -- and there is nothing here to check it
+  // against, since choosing is the whole of what they do. Left to compile_model, which is the
+  // only thing that knows whether the policy found anything.
+  const std::string_view family(device.data(), std::min(device.find(':'), device.size()));
+  for (const std::string_view virtual_device : { "AUTO", "MULTI", "HETERO", "BATCH" })
+  {
+    if (family == virtual_device)
+      return device;
+  }
+
   std::string available;
   try
   {
@@ -96,6 +105,13 @@ std::string require_inference_device()
   std::exit(1);
 }
 
+// Where video decoding runs, and the one place that decides it.
+//
+// The value is a list, not a switch: "auto" ends in the CPU and therefore always opens, while a
+// named backend stands alone and a machine that cannot provide it fails to start. That is the
+// difference worth having -- a deployment that asked for hardware and quietly got software is the
+// failure this whole exercise exists to make visible, and it looks from the outside exactly like
+// a service that merely burns CPU.
 sve::DecodeDevice open_decode_device()
 {
   const std::string choice = require_env("ANALYTICS_VIDEO_DECODER");
