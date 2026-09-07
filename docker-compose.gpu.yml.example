@@ -1,0 +1,44 @@
+# Hardware video decoding (and GPU inference) for analytics-worker on a host with an Intel iGPU.
+#
+# Copy to docker-compose.override.yml (untracked), set the GID below, and leave the rest alone:
+# compose merges that file automatically, so `docker compose up -d` stays exactly as documented
+# and no tracked file is edited -- an update cannot conflict with a local choice.
+#
+# Without it the worker still runs: ANALYTICS_VIDEO_DECODER=auto decodes in software and says so
+# in the log at startup. What it costs is roughly three quarters of the decode, which on a
+# multi-camera host is the difference between the decode being free and it being the second
+# largest thing the process does.
+#
+# ---------------------------------------------------------------------------
+# The GID is not optional and cannot be a name.
+#
+#     stat -c '%g' /dev/dri/renderD128
+#
+# `group_add: "render"` resolves the name inside the *container*, and the runtime image is a bare
+# ubuntu:24.04 that has no `render` group at all -- while on the host it is usually 110 or 109,
+# and differs between distributions. Get this wrong and the device is present but cannot be
+# opened, so the decoder falls back to the CPU and the passthrough looks like it did nothing.
+#
+# The render node is the only device needed: the VA-API path opens /dev/dri/renderD128 by name,
+# and so does OpenVINO's GPU plugin through OpenCL. cardN is for display, and passing the whole
+# /dev/dri hands the container every GPU on the box.
+#
+# Verify inside the container, in this order -- each answers a different failure:
+#
+#     docker compose exec analytics-worker ls -l /dev/dri     # passed through at all?
+#     docker compose exec analytics-worker vainfo             # driver loaded, decode profiles?
+#
+# vainfo should name the Intel iHD driver and list VAProfileH264Main/High and VAProfileHEVCMain
+# with VAEntrypointVLD. The worker's own log is the other half of the answer: it says which
+# device it opened at startup, and `frame_sampler: decoding h264 on vaapi` once frames arrive.
+#
+# The same passthrough is what ANALYTICS_DEVICE=GPU needs, since OpenVINO reaches the iGPU
+# through the same render node. Both share one chip: decode, encode and inference are separate
+# blocks on Intel, but they are not separate silicon.
+# ---------------------------------------------------------------------------
+services:
+  analytics-worker:
+    devices:
+      - "/dev/dri/renderD128:/dev/dri/renderD128"
+    group_add:
+      - "110"

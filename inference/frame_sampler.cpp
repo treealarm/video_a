@@ -25,6 +25,10 @@ AVPixelFormat to_av_pixel_format(sve::PixelFormat format)
     case sve::PixelFormat::YUV444P: return AV_PIX_FMT_YUV444P;
     case sve::PixelFormat::GRAY8:   return AV_PIX_FMT_GRAY8;
     case sve::PixelFormat::P010:    return AV_PIX_FMT_P010;
+    // A Main10 source decoded in software. It reaches here whenever the hardware has no
+    // ten-bit path for the codec and the decoder falls back, which is the case this whole
+    // switch has to survive: an unmapped format discards every frame of the stream.
+    case sve::PixelFormat::YUV420P10: return AV_PIX_FMT_YUV420P10;
     default:                        return AV_PIX_FMT_NONE;
   }
 }
