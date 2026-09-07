@@ -46,6 +46,12 @@
 build/
 Build/
 build-*/
+# The library submodule's own build trees. .dockerignore patterns without a slash match only at
+# the top level, so the lines above do not reach into sve/ -- and its build directory is larger
+# than everything else in this context put together.
+sve/build/
+sve/build-*/
+sve/.cache/
 
 # CMake generated files
 CMakeFiles/

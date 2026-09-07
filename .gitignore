@@ -73,3 +73,7 @@ Testing/
 !/models/.gitkeep
 /data/
 
+# Dropped in the working directory by Intel's graphics compiler when OpenVINO compiles kernels for
+# the iGPU (ANALYTICS_DEVICE=GPU). A diagnostic from its own igc_check self-test, not ours, and not
+# something that stops inference -- but it lands wherever the worker was started from.
+kernel.errors.txt

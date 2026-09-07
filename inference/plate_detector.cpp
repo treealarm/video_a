@@ -81,7 +81,14 @@ plate_detector::plate_detector(const std::string& model_path)
       model->reshape({ ov::PartialShape{ 1, 3, reshape_h, reshape_w } });
     }
 
-    m_compiled = m_core.compile_model(model, device);
+    // One thread per inference on the CPU, the same limit appearance_embedder already sets.
+    // OpenVINO's default is every core, which for a model this small buys little wall time and
+    // costs a great deal of processor time in barriers and thread wake-ups -- and a deployment
+    // runs one of these per watched camera, where the parallelism is spent competing with itself.
+    ov::AnyMap compile_cfg;
+    if (device == "CPU")
+      compile_cfg.emplace(ov::inference_num_threads.name(), 1);
+    m_compiled = m_core.compile_model(model, device, compile_cfg);
     m_request = m_compiled.create_infer_request();
 
     const auto input_shape = m_compiled.input().get_shape();

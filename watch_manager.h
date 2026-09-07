@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "inference/detection.h"
+#include "sve/decoder.h"
 
 class reader;
 class pipeline;
@@ -51,7 +52,11 @@ class watch_manager {
 public:
   using detection_callback = std::function<void(const std::string& watch_id, const final_detection&)>;
 
-  watch_manager(std::string model_dir, int reid_embed_interval_sec, detection_callback on_detection);
+  // `decode_device` is where every watch decodes. One device for the process, copied into each
+  // sampler -- it is a shared handle, so this costs a reference count and removes any question of
+  // which object owns it.
+  watch_manager(std::string model_dir, int reid_embed_interval_sec, detection_callback on_detection,
+    sve::DecodeDevice decode_device = sve::DecodeDevice::Cpu());
   ~watch_manager();
 
   // Idempotent: re-calling with the same watch_id tears down and recreates the watch with the
@@ -76,6 +81,7 @@ private:
   std::string m_model_dir;
   int m_reid_embed_interval_sec;
   detection_callback m_on_detection;
+  sve::DecodeDevice m_decode_device;
 
   std::mutex m_mutex;
   std::unordered_map<std::string, watch_entry> m_watches;

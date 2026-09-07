@@ -10,10 +10,12 @@
 #include "inference/pipeline.h"
 #include "logging.h"
 
-watch_manager::watch_manager(std::string model_dir, int reid_embed_interval_sec, detection_callback on_detection)
+watch_manager::watch_manager(std::string model_dir, int reid_embed_interval_sec,
+  detection_callback on_detection, sve::DecodeDevice decode_device)
   : m_model_dir(std::move(model_dir))
   , m_reid_embed_interval_sec(reid_embed_interval_sec)
   , m_on_detection(std::move(on_detection))
+  , m_decode_device(std::move(decode_device))
 {
 }
 
@@ -95,7 +97,7 @@ bool watch_manager::start_watch(const watch_params& params)
   entry.sampler = std::make_shared<frame_sampler>([inference_ptr](const decoded_frame& frame)
   {
     inference_ptr->submit(frame);
-  }, params.sample_fps);
+  }, params.sample_fps, m_decode_device);
 
   // Stage 1: whichever source this watch names. A file is read at its own timestamps and looped,
   // so that everything downstream — the sampler's rate measurement above all — sees the same shape
