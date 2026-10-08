@@ -112,14 +112,14 @@ std::string require_inference_device()
 // difference worth having -- a deployment that asked for hardware and quietly got software is the
 // failure this whole exercise exists to make visible, and it looks from the outside exactly like
 // a service that merely burns CPU.
-sve::DecodeDevice open_decode_device()
+ta_roienc::DecodeDevice open_decode_device()
 {
   const std::string choice = require_env("ANALYTICS_VIDEO_DECODER");
 
-  sve::DecodeSelection selection;
+  ta_roienc::DecodeSelection selection;
   try
   {
-    selection = sve::decode_selection_from_name(choice);
+    selection = ta_roienc::decode_selection_from_name(choice);
   }
   catch (const std::exception& e)
   {
@@ -127,7 +127,7 @@ sve::DecodeDevice open_decode_device()
     std::exit(1);
   }
 
-  sve::Result<sve::DecodeDevice> opened = sve::DecodeDevice::Open(selection);
+  ta_roienc::Result<ta_roienc::DecodeDevice> opened = ta_roienc::DecodeDevice::Open(selection);
   if (!opened)
   {
     log()->critical("ANALYTICS_VIDEO_DECODER={}: {}", choice, opened.status().message());
@@ -159,8 +159,7 @@ void print_roi_usage()
     "\n"
     "  Decodes INPUT, detects what is in it, and re-encodes it through roi-transcode-svc\n"
     "  spending the bits on the detected objects. Writes the video and a sidecar of the\n"
-    "  regions that were asked for, which roi_transcode's integration/scripts/boxes-to-ass.py\n"
-    "  turns into subtitles any player can draw over the result.\n"
+    "  regions that were asked for.\n"
     "\n"
     "  --detect-only          detect and write the sidecar only; no encoder, no --roi-grpc,\n"
     "                         and --regions stays boxes because the other forms are built\n"

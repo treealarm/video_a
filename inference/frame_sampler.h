@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "interfaces/media_sink.h"
-#include "sve/decoder.h"
+#include "ta_roienc/decoder.h"
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -55,11 +55,11 @@ public:
   // sample_fps is the target rate; 0 is read as 1. It bounds how often a decoded frame is handed
   // on, and decides which decode mode the measured keyframe spacing has to beat.
   //
-  // `device` says where the decoding runs. Taken by value because sve::DecodeDevice is a shared
+  // `device` says where the decoding runs. Taken by value because ta_roienc::DecodeDevice is a shared
   // handle: every sampler in the process holds the same device and none of them can outlive it.
   // The default is the CPU, which is a device like any other here -- there is no null to check.
   frame_sampler(std::function<void(const decoded_frame&)> callback, uint32_t sample_fps,
-    sve::DecodeDevice device = sve::DecodeDevice::Cpu());
+    ta_roienc::DecodeDevice device = ta_roienc::DecodeDevice::Cpu());
   ~frame_sampler() override;
 
   void on_packet(const std::shared_ptr<media_packet>& pkt) override;
@@ -70,8 +70,8 @@ private:
   void update_mode();
 
   bool ensure_decoder(const media_packet& pkt);
-  bool ensure_sws_context(int width, int height, sve::PixelFormat format, bool full_range);
-  void handle_decoded_frame(const sve::Frame& frame, const sve::DecodedFrameInfo& info);
+  bool ensure_sws_context(int width, int height, ta_roienc::PixelFormat format, bool full_range);
+  void handle_decoded_frame(const ta_roienc::Frame& frame, const ta_roienc::DecodedFrameInfo& info);
   void worker_loop();
   void decode_packet(const media_packet& pkt, std::chrono::system_clock::time_point arrived_at);
 
@@ -137,8 +137,8 @@ private:
   // hardware device the frames stay on the GPU until the emit schedule below actually wants one:
   // a stream that keys rarely is decoded in full at 25 frames a second and only the one frame a
   // second that reaches inference is ever brought back across the bus.
-  sve::DecodeDevice m_device;
-  sve::VideoDecoder m_decoder;
+  ta_roienc::DecodeDevice m_device;
+  ta_roienc::VideoDecoder m_decoder;
   bool m_decoder_open = false;
   // Said once, when the first frame settles the negotiation. Which device was asked for is known
   // at startup; which one libavcodec agreed to is not known until a frame comes out, and printing
@@ -151,6 +151,6 @@ private:
   std::unique_ptr<SwsContext, sws_context_deleter> m_sws_ctx;
   int m_sws_width = 0;
   int m_sws_height = 0;
-  sve::PixelFormat m_sws_format = sve::PixelFormat::Unknown;
+  ta_roienc::PixelFormat m_sws_format = ta_roienc::PixelFormat::Unknown;
   bool m_sws_full_range = false;
 };

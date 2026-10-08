@@ -11,7 +11,7 @@
 #include "logging.h"
 
 watch_manager::watch_manager(std::string model_dir, int reid_embed_interval_sec,
-  detection_callback on_detection, sve::DecodeDevice decode_device)
+  detection_callback on_detection, ta_roienc::DecodeDevice decode_device)
   : m_model_dir(std::move(model_dir))
   , m_reid_embed_interval_sec(reid_embed_interval_sec)
   , m_on_detection(std::move(on_detection))
