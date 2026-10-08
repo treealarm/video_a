@@ -1,4 +1,4 @@
-[submodule "sve"]
-	path = sve
+[submodule "ta_roienc"]
+	path = ta_roienc
 	url = git@github.com:treealarm/roi_transcode.git
 	branch = main

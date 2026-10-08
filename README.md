@@ -64,8 +64,8 @@ continuous source. Everything else about the watch is unchanged: same classes, s
 
 A second entry point, selected by the flag and otherwise not reachable: decode a file, detect what
 is in it, and push every frame with its regions to ta_vms' ROI encoder over plain gRPC (no Dapr).
-The encoder muxes the result; this side writes a `*.boxes.json` beside it that
-`roi_transcode/integration/scripts/boxes-to-ass.py` turns into subtitles for a player.
+The encoder muxes the result; this side writes a `*.boxes.json` beside it with the regions that
+were asked for.
 
 ```bash
 analytics-worker --roi-file clip.mp4 --roi-grpc 127.0.0.1:50061 \

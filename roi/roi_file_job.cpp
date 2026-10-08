@@ -508,7 +508,7 @@ private:
   {
     if (m_config.qpmap_block > 0)
       return m_config.qpmap_block;
-    // Match smartvideo EncoderCapabilities for libx264 / libx265.
+    // Match the encoder library's capabilities for libx264 / libx265.
     return m_config.encode.codec == "h264" ? 16 : 32;
   }
 

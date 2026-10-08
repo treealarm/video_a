@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "inference/detection.h"
-#include "sve/decoder.h"
+#include "ta_roienc/decoder.h"
 
 class reader;
 class pipeline;
@@ -56,7 +56,7 @@ public:
   // sampler -- it is a shared handle, so this costs a reference count and removes any question of
   // which object owns it.
   watch_manager(std::string model_dir, int reid_embed_interval_sec, detection_callback on_detection,
-    sve::DecodeDevice decode_device = sve::DecodeDevice::Cpu());
+    ta_roienc::DecodeDevice decode_device = ta_roienc::DecodeDevice::Cpu());
   ~watch_manager();
 
   // Idempotent: re-calling with the same watch_id tears down and recreates the watch with the
@@ -81,7 +81,7 @@ private:
   std::string m_model_dir;
   int m_reid_embed_interval_sec;
   detection_callback m_on_detection;
-  sve::DecodeDevice m_decode_device;
+  ta_roienc::DecodeDevice m_decode_device;
 
   std::mutex m_mutex;
   std::unordered_map<std::string, watch_entry> m_watches;

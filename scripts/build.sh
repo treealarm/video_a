@@ -12,10 +12,10 @@ TA_VMS_DIR="${TA_VMS_DIR:-$SCRIPT_DIR/../../ta_vms}"
 
 # The encoder library, which the worker decodes through. The Dockerfile copies the working tree
 # into the build context, so an uninitialised submodule reaches the image as an empty directory
-# and fails inside the container at add_subdirectory(sve) -- a confusing place to learn that a
-# clone was not recursive.
-if [ ! -f "$SCRIPT_DIR/../sve/CMakeLists.txt" ]; then
-    echo "=== Fetching the sve submodule ==="
+# and fails inside the container at add_subdirectory(ta_roienc) -- a confusing place to learn
+# that a clone was not recursive.
+if [ ! -f "$SCRIPT_DIR/../ta_roienc/CMakeLists.txt" ]; then
+    echo "=== Fetching the ta_roienc submodule ==="
     git -C "$SCRIPT_DIR/.." submodule update --init --recursive
 fi
 

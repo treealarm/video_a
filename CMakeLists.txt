@@ -24,23 +24,21 @@ pkg_check_modules(FFMPEG REQUIRED
     libswresample
 )
 
-# smart-video-encoder, for its decoder and nothing else.
+# ta_roienc, for its decoder and nothing else.
 #
 # The worker decodes every packet of every watched stream and hands one frame a second to
 # inference. Doing that on the video engine instead of the CPU is the same problem media_server
 # already solved, so the implementation is shared rather than written a second time here -- see
-# sve/include/sve/decoder.h. Everything encoder-shaped is switched off: this program produces no
-# video, and the components that do would drag libx264, libx265 and the whole backend registry
-# onto a link line that has no use for them.
-set(SVE_BUILD_TESTS         OFF CACHE BOOL "" FORCE)
-set(SVE_BUILD_INTEGRATION   OFF CACHE BOOL "" FORCE)
-set(SVE_BUILD_TOOLS         OFF CACHE BOOL "" FORCE)
-set(SVE_BUILD_EXAMPLES      OFF CACHE BOOL "" FORCE)
-set(SVE_BUILD_BACKEND_X264  OFF CACHE BOOL "" FORCE)
-set(SVE_BUILD_BACKEND_X265  OFF CACHE BOOL "" FORCE)
-set(SVE_INSTALL             OFF CACHE BOOL "" FORCE)
-set(SVE_BUILD_DECODE        ON  CACHE BOOL "" FORCE)
-add_subdirectory(sve)
+# ta_roienc/include/ta_roienc/decoder.h. Everything encoder-shaped is switched off: this program
+# produces no video, and the components that do would drag libx264, libx265 and the whole
+# backend registry onto a link line that has no use for them.
+set(TA_ROIENC_BUILD_TESTS         OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_SESSION       OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_BACKEND_X264  OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_BACKEND_X265  OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_INSTALL             OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_DECODE        ON  CACHE BOOL "" FORCE)
+add_subdirectory(ta_roienc)
 
 set(ANALYTICS_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/analytics.proto)
 # ta_vms' contract, vendored. Only the client half is generated here — this repository never
@@ -147,7 +145,7 @@ target_link_directories(analytics-worker PRIVATE ${FFMPEG_LIBRARY_DIRS})
 
 target_link_libraries(analytics-worker
     PRIVATE
-    sve_decode
+    ta_roienc_decode
     ${FFMPEG_LIBRARIES}
     protobuf::libprotobuf
     gRPC::grpc
