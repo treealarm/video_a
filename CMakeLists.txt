@@ -29,7 +29,7 @@ pkg_check_modules(FFMPEG REQUIRED
 # The worker decodes every packet of every watched stream and hands one frame a second to
 # inference. Doing that on the video engine instead of the CPU is the same problem media_server
 # already solved, so the implementation is shared rather than written a second time here -- see
-# sve/include/sve/decoder.h. Everything encoder-shaped is switched off: this program produces no
+# ta_roienc/include/sve/decoder.h. Everything encoder-shaped is switched off: this program produces no
 # video, and the components that do would drag libx264, libx265 and the whole backend registry
 # onto a link line that has no use for them.
 set(SVE_BUILD_TESTS         OFF CACHE BOOL "" FORCE)
@@ -40,7 +40,7 @@ set(SVE_BUILD_BACKEND_X264  OFF CACHE BOOL "" FORCE)
 set(SVE_BUILD_BACKEND_X265  OFF CACHE BOOL "" FORCE)
 set(SVE_INSTALL             OFF CACHE BOOL "" FORCE)
 set(SVE_BUILD_DECODE        ON  CACHE BOOL "" FORCE)
-add_subdirectory(sve)
+add_subdirectory(ta_roienc)
 
 set(ANALYTICS_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/analytics.proto)
 # ta_vms' contract, vendored. Only the client half is generated here — this repository never

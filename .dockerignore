@@ -47,11 +47,11 @@ build/
 Build/
 build-*/
 # The library submodule's own build trees. .dockerignore patterns without a slash match only at
-# the top level, so the lines above do not reach into sve/ -- and its build directory is larger
-# than everything else in this context put together.
-sve/build/
-sve/build-*/
-sve/.cache/
+# the top level, so the lines above do not reach into ta_roienc/ -- and its build directory is
+# larger than everything else in this context put together.
+ta_roienc/build/
+ta_roienc/build-*/
+ta_roienc/.cache/
 
 # CMake generated files
 CMakeFiles/
