@@ -54,7 +54,7 @@ jobs:
 
       # Logged in on pull requests too: ta-deps is several GB, and anonymous Docker Hub pulls are
       # rate-limited per runner IP.
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
           docker image prune -af
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - id: sha
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -92,7 +92,7 @@ jobs:
       # No layer cache: the builder COPYs the whole tree before compiling, so any edit invalidates
       # everything above the base, and the base itself is far too big for the 10 GB Actions cache.
       # Loaded as well as pushed, for the check below.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           build-contexts: ${{ steps.base.outputs.contexts }}
