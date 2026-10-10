@@ -1,0 +1,116 @@
+# Builds the treealarm/analytics-worker image: on every pull request as a check, and on main also
+# pushes it to Docker Hub as :latest and :sha-<commit>.
+#
+# Two inputs of the Dockerfile cannot come from this checkout, and both are swapped in through a
+# buildx named context of the name the Dockerfile uses -- so the Dockerfile stays as it is and keeps
+# building locally:
+#   ta-deps  the C++ base, owned by ta_vms (ta-deps/). Not built here: ~4 hours, mostly openvino,
+#            which a hosted runner's 6-hour job limit and ~14 GB of disk do not reliably fit. Pinned
+#            by ta-deps.tag; published from a workstation by ../ta_install/scripts/push-deps-images.sh.
+#   models   the detector weights, which are not in git. Pinned by models.tag; published by
+#            scripts/push-models-image.sh.
+#
+# Secrets: TA_ROIENC_DEPLOY_KEY (private half of a read-only deploy key on treealarm/roi_transcode,
+# the private ta_roienc submodule), DOCKER_USER, DOCKER_TOKEN. Pull requests from forks get none of
+# them and therefore cannot build.
+
+name: image
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NAMESPACE: treealarm
+  PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Not checkout's `submodules:` -- it fetches them over HTTPS with GITHUB_TOKEN, which cannot
+      # read another private repository. A deploy key is scoped to roi_transcode alone, read-only,
+      # so the .gitmodules SSH URL works as is.
+      - name: Submodules
+        env:
+          TA_ROIENC_DEPLOY_KEY: ${{ secrets.TA_ROIENC_DEPLOY_KEY }}
+        run: |
+          eval "$(ssh-agent -s)"
+          ssh-add - <<<"$TA_ROIENC_DEPLOY_KEY"
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git submodule update --init --recursive
+
+      # Logged in on pull requests too: ta-deps is several GB, and anonymous Docker Hub pulls are
+      # rate-limited per runner IP.
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Resolve base images
+        id: base
+        run: |
+          contexts=""
+          # resolve <context name> <image> <tag file> <how to publish it>
+          resolve() {
+            local image
+            image="$NAMESPACE/$2:$(<"$3")"
+            if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
+              echo "::error file=$3::$image is not published. CI cannot build it; $4, then re-run this job."
+              exit 1
+            fi
+            contexts+="$1=docker-image://$image"$'\n'
+          }
+          resolve ta-deps ta-deps ta-deps.tag "run ../ta_install/scripts/push-deps-images.sh from a ta_vms checkout whose ta-deps/ has this tree hash"
+          resolve models analytics-models models.tag "run scripts/push-models-image.sh and commit the models.tag it writes"
+          printf 'contexts<<EOF\n%sEOF\n' "$contexts" >> "$GITHUB_OUTPUT"
+
+      # The base image plus the build tree do not fit in the ~14 GB a runner leaves free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # No layer cache: the builder COPYs the whole tree before compiling, so any edit invalidates
+      # everything above the base, and the base itself is far too big for the 10 GB Actions cache.
+      # Loaded as well as pushed, for the check below.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-contexts: ${{ steps.base.outputs.contexts }}
+          push: ${{ env.PUBLISH == 'true' }}
+          load: true
+          tags: |
+            ${{ env.NAMESPACE }}/analytics-worker:latest
+            ${{ env.NAMESPACE }}/analytics-worker:sha-${{ steps.sha.outputs.short }}
+
+      # A detector whose model is missing does not fail -- it starts in stub mode and finds nothing,
+      # which from outside looks like a quiet scene. So say in every run what went into the image.
+      - name: Check models
+        env:
+          IMAGE: ${{ env.NAMESPACE }}/analytics-worker:sha-${{ steps.sha.outputs.short }}
+        run: |
+          models=$(docker run --rm --entrypoint ls "$IMAGE" -l /models)
+          echo "$models"
+          if ! grep -qE '\.(xml|onnx)$' <<<"$models"; then
+            echo "::error::$IMAGE has no models in /models"
+            exit 1
+          fi

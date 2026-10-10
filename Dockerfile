@@ -2,7 +2,16 @@
 #
 # Builder reuses ta_vms's ta-deps image for the C++ toolchain + shared vcpkg deps
 # (protobuf/grpc/spdlog/ffmpeg/openvino) instead of rebuilding them here — see scripts/build.sh,
-# which builds ta-deps from the sibling ta_vms checkout first if it's missing locally.
+# which builds ta-deps from the sibling ta_vms checkout first if it's missing locally. CI has no
+# ta-deps to build from and swaps in the published treealarm/ta-deps:<ta-deps.tag> through a buildx
+# named context of the same name (see .github/workflows/image.yml).
+
+# The models baked into the image. They are not in git, so a CI checkout has none: there this stage
+# is replaced, the same way as ta-deps, by the published treealarm/analytics-models:<models.tag> --
+# an image scripts/push-models-image.sh builds from this very stage (--target models). Locally it
+# takes whatever is in models/.
+FROM scratch AS models
+COPY models/ /
 
 FROM ta-deps AS builder
 
@@ -56,7 +65,7 @@ WORKDIR /app
 
 COPY --from=builder /build/build/analytics-worker /app/analytics-worker
 COPY --from=builder /runtime-libs /app
-COPY --from=builder /build/models /models
+COPY --from=models / /models
 
 ENV LD_LIBRARY_PATH=/app
 ENV ANALYTICS_MODEL_PATH=/models

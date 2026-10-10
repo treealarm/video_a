@@ -28,8 +28,8 @@ Requires these environment variables (see `.env`):
 - `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector.xml/.bin` (or `.onnx`),
   `face_detector.xml/.bin`, `plate_detector.xml/.bin`, `plate_ocr.xml/.bin`,
   `person_embedder.xml/.bin` (OpenVINO IR pairs). `primary_detector` (person/vehicle,
-  YOLOv11-style), `face_detector` (OMZ face-detection-0205), `plate_detector` (OMZ
-  vehicle-license-plate-detection-barrier-0106) and `person_embedder` (body re-id, e.g. OSNet
+  YOLOv11-style), `face_detector` (OMZ face-detection-0205), `plate_detector` (YOLOv8n
+  single-class plate detector, see Docker below) and `person_embedder` (body re-id, e.g. OSNet
   512-d) are wired in; `plate_ocr` is still a stub that returns empty results, so plates are
   located but not read. A missing model file puts that detector into stub mode with a startup
   warning.
@@ -114,10 +114,12 @@ builds from, with protobuf/grpc/spdlog/ffmpeg/openvino prebuilt (see that repo's
 `scripts/build.sh` instead — it builds `ta-deps` from a sibling `../ta_vms` checkout first if
 missing (override the path with `TA_VMS_DIR`).
 
-The image bakes `models/` in (`COPY --from=builder /build/models /models`, `ANALYTICS_MODEL_PATH`
-defaults to `/models`) so a container works with no extra volume or fetch step. **Licensing
-note:** `models/primary_detector.*` is a YOLOv11n export and Ultralytics YOLOv11 is AGPL-3.0 —
-baking it into a distributed/deployed image is a deliberate, not-yet-fully-reconciled call (see
+The image bakes `models/` in (the Dockerfile's `models` stage, `ANALYTICS_MODEL_PATH` defaults to
+`/models`) so a container works with no extra volume or fetch step. `models/` must hold regular
+files only: a symlink reaches the build context as a link and lands in the image dangling, which
+the worker reports as a missing model. **Licensing note:** `models/primary_detector.*` is a
+YOLOv11n export, `models/plate_detector.*` a YOLOv8n fine-tune, and Ultralytics YOLO is AGPL-3.0 —
+baking them into a distributed/deployed image is a deliberate, not-yet-fully-reconciled call (see
 `ta_install/README.md`'s "Analytics models" section). `models/` itself is gitignored; regenerate
 `primary_detector.xml/.bin` with `pip install ultralytics && python -c "from ultralytics import
 YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"`, and fetch the face detector from
@@ -147,3 +149,23 @@ Linking note: `openvino::openvino_intel_cpu_plugin` must be linked with `--whole
 (see `CMakeLists.txt`) — without it, the static CPU plugin silently drops object files for less
 common op kernels (e.g. YOLOv11's C2PSA attention `MatMul`), causing a crash at inference time
 even though the model loads successfully.
+
+## CI
+
+`.github/workflows/image.yml` builds the image on every pull request and, on `main`, publishes
+`treealarm/analytics-worker:latest` and `:sha-<commit>`. Neither of the Dockerfile's outside inputs
+can come from a CI checkout, so both are pinned by a tag file and swapped in for the local name
+through a buildx named context:
+
+- `ta-deps.tag` → `treealarm/ta-deps:<tag>`, the git tree hash of `ta_vms/ta-deps/` (see
+  `ta_vms/scripts/deps-image-tags.sh`). Published by `ta_install/scripts/push-deps-images.sh`; CI
+  does not build it (~4 hours). When ta_vms publishes a new one, bump this file in a commit of its
+  own.
+- `models.tag` → `treealarm/analytics-models:<tag>`, a hash of the contents of `models/`. After
+  changing `models/`, run `scripts/push-models-image.sh` (needs `docker login`, or `DOCKER_USER` +
+  `DOCKER_TOKEN`): it builds the image from the Dockerfile's `models` stage, pushes it and rewrites
+  `models.tag` — commit that on its own.
+
+A tag that is not published fails the run with a message saying which script publishes it. The
+private `ta_roienc` submodule is fetched with the `TA_ROIENC_DEPLOY_KEY` secret, so pull requests
+from forks cannot build.
