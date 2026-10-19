@@ -6,41 +6,41 @@
 #include <vector>
 
 namespace {
-// ta_roienc::PixelFormat back to the one swscale names. The library keeps its own enumeration so that
+// ta_roienc::PixelLayout back to the one swscale names. The library keeps its own enumeration so that
 // its public headers name no FFmpeg type; swscale is an FFmpeg call, so the translation has to
 // happen somewhere, and here is the only place this program makes it.
 //
 // The JPEG-range formats (YUVJ*) are not in the list because they never arrive: the decoder
 // normalises them to their limited-range twin and reports the range separately, through
-// DecodedFrameInfo::full_range. That is the same normalisation this file used to do itself --
+// DecodedPictureInfo::full_range. That is the same normalisation this file used to do itself --
 // feeding a YUVJ format to sws_getContext logs "deprecated pixel format used" on every frame --
 // only now it is done once, for every consumer of the library.
-AVPixelFormat to_av_pixel_format(ta_roienc::PixelFormat format)
+AVPixelFormat to_av_pixel_format(ta_roienc::PixelLayout format)
 {
   switch (format)
   {
-    case ta_roienc::PixelFormat::YUV420P: return AV_PIX_FMT_YUV420P;
-    case ta_roienc::PixelFormat::NV12:    return AV_PIX_FMT_NV12;
-    case ta_roienc::PixelFormat::YUV422P: return AV_PIX_FMT_YUV422P;
-    case ta_roienc::PixelFormat::YUV444P: return AV_PIX_FMT_YUV444P;
-    case ta_roienc::PixelFormat::GRAY8:   return AV_PIX_FMT_GRAY8;
-    case ta_roienc::PixelFormat::P010:    return AV_PIX_FMT_P010;
+    case ta_roienc::PixelLayout::YUV420P: return AV_PIX_FMT_YUV420P;
+    case ta_roienc::PixelLayout::NV12:    return AV_PIX_FMT_NV12;
+    case ta_roienc::PixelLayout::YUV422P: return AV_PIX_FMT_YUV422P;
+    case ta_roienc::PixelLayout::YUV444P: return AV_PIX_FMT_YUV444P;
+    case ta_roienc::PixelLayout::GRAY8:   return AV_PIX_FMT_GRAY8;
+    case ta_roienc::PixelLayout::P010:    return AV_PIX_FMT_P010;
     // A Main10 source decoded in software. It reaches here whenever the hardware has no
     // ten-bit path for the codec and the decoder falls back, which is the case this whole
     // switch has to survive: an unmapped format discards every frame of the stream.
-    case ta_roienc::PixelFormat::YUV420P10: return AV_PIX_FMT_YUV420P10;
+    case ta_roienc::PixelLayout::YUV420P10: return AV_PIX_FMT_YUV420P10;
     default:                        return AV_PIX_FMT_NONE;
   }
 }
 
-ta_roienc::InputCodec to_input_codec(AVCodecID id)
+ta_roienc::SourceCodec to_input_codec(AVCodecID id)
 {
   switch (id)
   {
-    case AV_CODEC_ID_H264: return ta_roienc::InputCodec::H264;
-    case AV_CODEC_ID_HEVC: return ta_roienc::InputCodec::H265;
-    case AV_CODEC_ID_MJPEG: return ta_roienc::InputCodec::Jpeg;
-    default: return ta_roienc::InputCodec::Raw;
+    case AV_CODEC_ID_H264: return ta_roienc::SourceCodec::H264;
+    case AV_CODEC_ID_HEVC: return ta_roienc::SourceCodec::H265;
+    case AV_CODEC_ID_MJPEG: return ta_roienc::SourceCodec::Jpeg;
+    default: return ta_roienc::SourceCodec::Raw;
   }
 }
 }
@@ -179,10 +179,10 @@ void frame_sampler::decode_packet(
   // The timestamp is handed over as the packet carries it. Nothing here reads it back -- frames
   // are dated by m_current_arrival, for the reason that member documents -- but a decoder that is
   // fed timestamps reorders correctly, and one that is fed nothing has to guess.
-  const ta_roienc::MediaTimestamp ts{ pkt.packet->pts, { pkt.time_base.num, pkt.time_base.den } };
-  const ta_roienc::Status status = m_decoder.Push(
+  const ta_roienc::Stamp ts{ pkt.packet->pts, { pkt.time_base.num, pkt.time_base.den } };
+  const ta_roienc::Verdict status = m_decoder.Push(
     { pkt.packet->data, static_cast<size_t>(pkt.packet->size) }, ts,
-    [this](const ta_roienc::Frame& frame, const ta_roienc::DecodedFrameInfo& info)
+    [this](const ta_roienc::Picture& frame, const ta_roienc::DecodedPictureInfo& info)
     {
       handle_decoded_frame(frame, info);
     });
@@ -195,8 +195,8 @@ bool frame_sampler::ensure_decoder(const media_packet& pkt)
   if (m_decoder_open) return true;
   if (!pkt.codec_parameters) return false;
 
-  const ta_roienc::InputCodec codec = to_input_codec(pkt.codec_parameters->codec_id);
-  if (codec == ta_roienc::InputCodec::Raw)
+  const ta_roienc::SourceCodec codec = to_input_codec(pkt.codec_parameters->codec_id);
+  if (codec == ta_roienc::SourceCodec::Raw)
   {
     log()->error("frame_sampler: no decoder for codec_id={}",
       static_cast<int>(pkt.codec_parameters->codec_id));
@@ -207,7 +207,7 @@ bool frame_sampler::ensure_decoder(const media_packet& pkt)
     pkt.codec_parameters->extradata,
     pkt.codec_parameters->extradata ? static_cast<size_t>(pkt.codec_parameters->extradata_size) : 0);
 
-  const ta_roienc::Status status = m_decoder.Open(codec, extradata, m_device);
+  const ta_roienc::Verdict status = m_decoder.Opened(codec, extradata, m_device);
   if (!status)
   {
     log()->error("frame_sampler: decoder would not open: {}", status.message());
@@ -219,7 +219,7 @@ bool frame_sampler::ensure_decoder(const media_packet& pkt)
 }
 
 bool frame_sampler::ensure_sws_context(
-  int width, int height, ta_roienc::PixelFormat format, bool full_range)
+  int width, int height, ta_roienc::PixelLayout format, bool full_range)
 {
   if (m_sws_ctx && width == m_sws_width && height == m_sws_height && format == m_sws_format
       && full_range == m_sws_full_range)
@@ -228,7 +228,7 @@ bool frame_sampler::ensure_sws_context(
   const AVPixelFormat src_format = to_av_pixel_format(format);
   if (src_format == AV_PIX_FMT_NONE)
   {
-    log()->error("frame_sampler: cannot convert {} to BGR24", ta_roienc::pixel_format_name(format));
+    log()->error("frame_sampler: cannot convert {} to BGR24", ta_roienc::pixel_layout_name(format));
     return false;
   }
 
@@ -254,7 +254,7 @@ bool frame_sampler::ensure_sws_context(
 }
 
 void frame_sampler::handle_decoded_frame(
-  const ta_roienc::Frame& frame, const ta_roienc::DecodedFrameInfo& info)
+  const ta_roienc::Picture& frame, const ta_roienc::DecodedPictureInfo& info)
 {
   if (!m_callback) return;
   if (!frame) return;
@@ -292,13 +292,13 @@ void frame_sampler::handle_decoded_frame(
 
   // Into system memory, if it is not there already. A frame decoded on the CPU comes back
   // unchanged and costs nothing here.
-  ta_roienc::Result<ta_roienc::Frame> readable = m_decoder.Download(frame);
+  ta_roienc::Fallible<ta_roienc::Picture> readable = m_decoder.Download(frame);
   if (!readable)
   {
     log()->warn("frame_sampler: {}", readable.status().message());
     return;
   }
-  ta_roienc::IFrameBuffer& pixels = readable.value().mutable_buffer();
+  ta_roienc::IPictureStore& pixels = readable.value().writable_data();
   if (pixels.width() <= 0 || pixels.height() <= 0) return;
 
   if (!ensure_sws_context(pixels.width(), pixels.height(), pixels.format(), info.full_range))
@@ -318,7 +318,7 @@ void frame_sampler::handle_decoded_frame(
   int src_linesize[4] = {};
   for (int i = 0; i < 4; ++i)
   {
-    const ta_roienc::PlaneView plane = pixels.plane(i);
+    const ta_roienc::LayerView plane = pixels.plane(i);
     src_data[i] = plane.empty() ? nullptr : plane.bytes.data();
     src_linesize[i] = plane.stride;
   }

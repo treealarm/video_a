@@ -31,11 +31,11 @@ pkg_check_modules(FFMPEG REQUIRED
 # already solved, so the implementation is shared rather than written a second time here -- see
 # ta_roienc/include/ta_roienc/decoder.h. Everything encoder-shaped is switched off: this program
 # produces no video, and the components that do would drag libx264, libx265 and the whole
-# backend registry onto a link line that has no use for them.
+# engine registry onto a link line that has no use for them.
 set(TA_ROIENC_BUILD_TESTS         OFF CACHE BOOL "" FORCE)
-set(TA_ROIENC_BUILD_SESSION       OFF CACHE BOOL "" FORCE)
-set(TA_ROIENC_BUILD_BACKEND_X264  OFF CACHE BOOL "" FORCE)
-set(TA_ROIENC_BUILD_BACKEND_X265  OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_TRANSCODER    OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_ENGINE_X264   OFF CACHE BOOL "" FORCE)
+set(TA_ROIENC_BUILD_ENGINE_X265   OFF CACHE BOOL "" FORCE)
 set(TA_ROIENC_INSTALL             OFF CACHE BOOL "" FORCE)
 set(TA_ROIENC_BUILD_DECODE        ON  CACHE BOOL "" FORCE)
 add_subdirectory(ta_roienc)

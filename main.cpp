@@ -116,10 +116,10 @@ ta_roienc::DecodeDevice open_decode_device()
 {
   const std::string choice = require_env("ANALYTICS_VIDEO_DECODER");
 
-  ta_roienc::DecodeSelection selection;
+  ta_roienc::DecodeOrder selection;
   try
   {
-    selection = ta_roienc::decode_selection_from_name(choice);
+    selection = ta_roienc::decode_order_from_name(choice);
   }
   catch (const std::exception& e)
   {
@@ -127,7 +127,7 @@ ta_roienc::DecodeDevice open_decode_device()
     std::exit(1);
   }
 
-  ta_roienc::Result<ta_roienc::DecodeDevice> opened = ta_roienc::DecodeDevice::Open(selection);
+  ta_roienc::Fallible<ta_roienc::DecodeDevice> opened = ta_roienc::DecodeDevice::Opened(selection);
   if (!opened)
   {
     log()->critical("ANALYTICS_VIDEO_DECODER={}: {}", choice, opened.status().message());

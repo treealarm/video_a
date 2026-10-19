@@ -70,8 +70,8 @@ private:
   void update_mode();
 
   bool ensure_decoder(const media_packet& pkt);
-  bool ensure_sws_context(int width, int height, ta_roienc::PixelFormat format, bool full_range);
-  void handle_decoded_frame(const ta_roienc::Frame& frame, const ta_roienc::DecodedFrameInfo& info);
+  bool ensure_sws_context(int width, int height, ta_roienc::PixelLayout format, bool full_range);
+  void handle_decoded_frame(const ta_roienc::Picture& frame, const ta_roienc::DecodedPictureInfo& info);
   void worker_loop();
   void decode_packet(const media_packet& pkt, std::chrono::system_clock::time_point arrived_at);
 
@@ -151,6 +151,6 @@ private:
   std::unique_ptr<SwsContext, sws_context_deleter> m_sws_ctx;
   int m_sws_width = 0;
   int m_sws_height = 0;
-  ta_roienc::PixelFormat m_sws_format = ta_roienc::PixelFormat::Unknown;
+  ta_roienc::PixelLayout m_sws_format = ta_roienc::PixelLayout::Unknown;
   bool m_sws_full_range = false;
 };
