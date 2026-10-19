@@ -167,5 +167,5 @@ through a buildx named context:
   stage, pushes it and rewrites `models.tag` — commit that on its own.
 
 A tag that is not published fails the run with a message saying which script publishes it. The
-private `ta_roienc` submodule is fetched with the `TA_ROIENC_DEPLOY_KEY` secret, so pull requests
-from forks cannot build.
+run logs in to Docker Hub with the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so pull
+requests from forks cannot build.

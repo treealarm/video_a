@@ -10,9 +10,8 @@
 #   models   the detector weights, which are not in git. Pinned by models.tag; published by
 #            scripts/push-models-image.sh.
 #
-# Secrets: TA_ROIENC_DEPLOY_KEY (private half of a read-only deploy key on treealarm/roi_transcode,
-# the private ta_roienc submodule; the same key as ta_vms'), DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
-# Pull requests from forks get none of them and therefore cannot build.
+# Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN. Pull requests from forks get neither and therefore
+# cannot log in to pull the base images.
 
 name: image
 
@@ -37,20 +36,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # ta_roienc is public, so checkout fetches it over HTTPS with no credentials of its own.
       - uses: actions/checkout@v5
-
-      # Not checkout's `submodules:` -- it fetches them over HTTPS with GITHUB_TOKEN, which cannot
-      # read another private repository. A deploy key is scoped to roi_transcode alone, read-only,
-      # so the .gitmodules SSH URL works as is.
-      - name: Submodules
-        env:
-          TA_ROIENC_DEPLOY_KEY: ${{ secrets.TA_ROIENC_DEPLOY_KEY }}
-        run: |
-          eval "$(ssh-agent -s)"
-          ssh-add - <<<"$TA_ROIENC_DEPLOY_KEY"
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-          git submodule update --init --recursive
+        with:
+          submodules: recursive
 
       # Logged in on pull requests too: ta-deps is several GB, and anonymous Docker Hub pulls are
       # rate-limited per runner IP.
