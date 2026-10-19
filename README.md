@@ -162,9 +162,9 @@ through a buildx named context:
   does not build it (~4 hours). When ta_vms publishes a new one, bump this file in a commit of its
   own.
 - `models.tag` → `treealarm/analytics-models:<tag>`, a hash of the contents of `models/`. After
-  changing `models/`, run `scripts/push-models-image.sh` (needs `docker login`, or `DOCKER_USER` +
-  `DOCKER_TOKEN`): it builds the image from the Dockerfile's `models` stage, pushes it and rewrites
-  `models.tag` — commit that on its own.
+  changing `models/`, run `scripts/push-models-image.sh` (needs `docker login`, or
+  `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN`): it builds the image from the Dockerfile's `models`
+  stage, pushes it and rewrites `models.tag` — commit that on its own.
 
 A tag that is not published fails the run with a message saying which script publishes it. The
 private `ta_roienc` submodule is fetched with the `TA_ROIENC_DEPLOY_KEY` secret, so pull requests

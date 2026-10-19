@@ -9,8 +9,8 @@ set -euo pipefail
 # The tag is a hash of the contents of models/, so an image already published under it is the right
 # one by construction -- re-running this with nothing changed pushes nothing.
 #
-# Authentication: run `docker login` beforehand, or export DOCKER_USER + DOCKER_TOKEN in the
-# environment — credentials are never stored in this repository.
+# Authentication: run `docker login` beforehand, or export DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
+# in the environment — credentials are never stored in this repository.
 
 export DOCKER_BUILDKIT=1
 
@@ -36,8 +36,8 @@ fi
 TAG="$(cd "$MODELS_DIR" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)"
 IMAGE="$NAMESPACE/analytics-models:$TAG"
 
-if [ -n "${DOCKER_TOKEN:-}" ]; then
-    echo "${DOCKER_TOKEN}" | docker login "$REGISTRY" -u "${DOCKER_USER:?DOCKER_USER must be set when DOCKER_TOKEN is used}" --password-stdin
+if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+    echo "${DOCKERHUB_TOKEN}" | docker login "$REGISTRY" -u "${DOCKERHUB_USERNAME:?DOCKERHUB_USERNAME must be set when DOCKERHUB_TOKEN is used}" --password-stdin
 fi
 
 if docker buildx imagetools inspect "$IMAGE" &>/dev/null; then
