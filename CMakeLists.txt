@@ -44,6 +44,9 @@ set(ANALYTICS_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/analytics.proto)
 # ta_vms' contract, vendored. Only the client half is generated here — this repository never
 # serves it, it drives it for the offline ROI pass.
 set(ROI_TRANSCODE_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/roi_transcode.proto)
+# Served here: offline per-frame analysis of a file (decoded frames + objects). Separate from the
+# live-watch contract so batch consumers can evolve without touching what ta_vms depends on.
+set(FRAME_ANALYSIS_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/frame_analysis.proto)
 
 set(SOURCES
     main.cpp
@@ -59,6 +62,8 @@ set(SOURCES
     grpc_layer/analytics_service_impl.h
     grpc_layer/detection_queue.cpp
     grpc_layer/detection_queue.h
+    grpc_layer/frame_analysis_service_impl.cpp
+    grpc_layer/frame_analysis_service_impl.h
 
     interfaces/av_deleters.h
     interfaces/media_packet.h
@@ -71,6 +76,8 @@ set(SOURCES
     reader/rtsp_reader.cpp
     reader/rtsp_reader.h
 
+    roi/file_analyzer.cpp
+    roi/file_analyzer.h
     roi/roi_file_job.cpp
     roi/roi_file_job.h
     roi/roi_stream_client.cpp
@@ -115,6 +122,21 @@ protobuf_generate(
     LANGUAGE grpc
     IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
     PROTOS ${ANALYTICS_PROTO_FILE}
+    PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+    GENERATE_EXTENSIONS .grpc.pb.cc .grpc.pb.h
+)
+
+protobuf_generate(
+    TARGET analytics-worker
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
+    PROTOS ${FRAME_ANALYSIS_PROTO_FILE}
+)
+
+protobuf_generate(
+    TARGET analytics-worker
+    LANGUAGE grpc
+    IMPORT_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/proto
+    PROTOS ${FRAME_ANALYSIS_PROTO_FILE}
     PLUGIN protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
     GENERATE_EXTENSIONS .grpc.pb.cc .grpc.pb.h
 )

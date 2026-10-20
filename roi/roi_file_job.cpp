@@ -14,10 +14,10 @@
 
 #include "interfaces/av_deleters.h"
 #include "interfaces/media_sink.h"
-#include "inference/frame_sampler.h"
 #include "inference/pipeline.h"
 #include "logging.h"
 #include "reader/file_reader.h"
+#include "roi/file_analyzer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -28,32 +28,6 @@ extern "C" {
 }
 
 namespace {
-
-const char* kind_name(detection_kind kind)
-{
-  switch (kind)
-  {
-    case detection_kind::person:        return "person";
-    case detection_kind::face:          return "face";
-    case detection_kind::vehicle:       return "vehicle";
-    case detection_kind::license_plate: return "license_plate";
-  }
-  return "unknown";
-}
-
-// Same normalization frame_sampler does: a YUVJ format is the deprecated spelling of a full-range
-// one, and handing it to sws directly logs a deprecation warning on every single frame.
-AVPixelFormat normalize_pixel_format(AVPixelFormat fmt, bool& full_range)
-{
-  switch (fmt)
-  {
-    case AV_PIX_FMT_YUVJ420P: full_range = true; return AV_PIX_FMT_YUV420P;
-    case AV_PIX_FMT_YUVJ422P: full_range = true; return AV_PIX_FMT_YUV422P;
-    case AV_PIX_FMT_YUVJ444P: full_range = true; return AV_PIX_FMT_YUV444P;
-    case AV_PIX_FMT_YUVJ440P: full_range = true; return AV_PIX_FMT_YUV440P;
-    default:                  full_range = false; return fmt;
-  }
-}
 
 std::string json_escape(const std::string& s)
 {
@@ -187,23 +161,16 @@ struct sidecar {
   }
 };
 
-struct sws_context_deleter {
-  void operator()(SwsContext* ctx) const noexcept { if (ctx) sws_freeContext(ctx); }
-};
-using sws_context_ptr = std::unique_ptr<SwsContext, sws_context_deleter>;
-using avcodec_context_ptr = std::unique_ptr<AVCodecContext, avcodec_context_deleter>;
-
-// Decodes every video packet the reader hands it, runs inference on a schedule of its own, and
-// pushes each frame to the encoder with the regions in force at that moment.
+// Takes each frame the analyzer hands on and pushes it to the encoder with the regions in force
+// at that moment, or -- with detect_only -- only records them.
 //
 // Everything here runs on the reader's thread, one packet at a time. That is what removes the
 // need for a queue: the reader cannot get ahead of the encoder because it is the encoder's call
 // stack that it is waiting on.
-class roi_encode_sink final : public media_sink {
+class roi_encode_sink {
 public:
-  roi_encode_sink(const roi_job_config& config, pipeline& detector, roi_stream_client& client)
+  roi_encode_sink(const roi_job_config& config, roi_stream_client& client)
     : m_config(config)
-    , m_detector(detector)
     , m_client(client)
   {
     m_sidecar.input = config.input_path;
@@ -212,93 +179,88 @@ public:
     m_qpmap.output = config.encode.output_path;
   }
 
-  void on_packet(const std::shared_ptr<media_packet>& pkt) override
-  {
-    if (m_failed) return;
-    if (!pkt || !pkt->packet) return;
-    if (pkt->media_type != AVMEDIA_TYPE_VIDEO) return;
-
-    if (!ensure_decoder(*pkt)) return;
-
-    m_time_base = pkt->time_base;
-    if (pkt->frame_rate.num > 0 && pkt->frame_rate.den > 0)
-      m_frame_rate = pkt->frame_rate;
-
-    if (avcodec_send_packet(m_decoder.get(), pkt->packet.get()) < 0)
-      return;
-    drain_decoder();
-  }
-
-  /// Pushes the last frames out of the decoder. The reader has no way to say "that was the end"
-  /// through media_sink, so the job calls this once the read loop has finished.
-  void flush()
-  {
-    if (m_decoder && !m_failed)
-    {
-      avcodec_send_packet(m_decoder.get(), nullptr);
-      drain_decoder();
-    }
-  }
-
-  bool failed() const { return m_failed; }
-  int64_t frames_sent() const { return m_frames_sent; }
-  int64_t detections_run() const { return m_detect_passes; }
   const sidecar& regions() const { return m_sidecar; }
   const qpmap_sidecar& qp_maps() const { return m_qpmap; }
 
-private:
-  bool ensure_decoder(const media_packet& pkt)
+  bool handle_frame(file_analyzer& analyzer, const analyzed_frame& af)
   {
-    if (m_decoder) return true;
-    if (!pkt.codec_parameters) return false;
+    const AVFrame* frame = af.frame;
+    if (!ensure_encoder_open(frame, af)) return false;
 
-    const AVCodec* codec = avcodec_find_decoder(pkt.codec_parameters->codec_id);
-    if (!codec)
+    const double t = af.t;
+    m_boxes = af.boxes;
+
+    // Without an encoder the frame is already spent: the detector has had it, the regions are
+    // recorded below, and YUV420P is the wire's format rather than the sidecar's.
+    if (m_config.detect_only)
     {
-      log()->error("roi job: no decoder for codec_id={}",
-        static_cast<int>(pkt.codec_parameters->codec_id));
-      m_failed = true;
+      m_sidecar.frames.push_back(sidecar_frame{ t, *af.boxes });
+      // Progress, because this is the one mode with nothing on the other end to report it: a
+      // minute of silence over a long clip cannot be told from a hang. Once per second of
+      // content, measured on the file's own timeline like everything else here.
+      constexpr double kProgressIntervalSec = 1.0;
+      if (t + 1e-9 >= m_next_progress_at)
+      {
+        log()->info("roi job: detected through t={:.2f} ({} frames, {} passes)", t,
+          af.index + 1, analyzer.detections_run());
+        m_next_progress_at = t + kProgressIntervalSec;
+      }
+      return true;
+    }
+
+    const std::vector<uint8_t>* yuv = analyzer.pack_yuv420p(frame);
+    if (!yuv) return false;
+
+    const int64_t pts = af.pts;
+    bool sent = false;
+    if (m_config.regions == roi_region_form::mask)
+    {
+      build_mask(frame->width, frame->height);
+      sent = m_client.send_frame_mask(pts, yuv->data(), yuv->size(),
+        m_mask.data(), m_mask_width, m_mask_height);
+    }
+    else if (m_config.regions == roi_region_form::qp_map)
+    {
+      build_qp_map(frame->width, frame->height);
+      sent = m_client.send_frame_qp_map(pts, yuv->data(), yuv->size(),
+        m_qp_block, m_qp_cols, m_qp_rows, m_qp_width, m_qp_height,
+        m_qp_deltas.data(), m_qp_deltas.size());
+      if (sent && !m_config.qpmap_json_path.empty())
+      {
+        if (m_qpmap.width == 0)
+        {
+          m_qpmap.width = frame->width;
+          m_qpmap.height = frame->height;
+          m_qpmap.block = m_qp_block;
+        }
+        m_qpmap.frames.push_back(
+          qpmap_sidecar_frame{ t, m_qp_cols, m_qp_rows, m_qp_deltas });
+      }
+    }
+    else
+    {
+      sent = m_client.send_frame(pts, yuv->data(), yuv->size(), *af.boxes);
+    }
+
+    if (!sent)
+    {
+      log()->error("roi job: the encoder stopped accepting frames after {}", af.index);
       return false;
     }
 
-    AVCodecContext* ctx = avcodec_alloc_context3(codec);
-    if (!ctx) { m_failed = true; return false; }
-
-    if (avcodec_parameters_to_context(ctx, pkt.codec_parameters.get()) < 0
-      || avcodec_open2(ctx, codec, nullptr) < 0)
-    {
-      avcodec_free_context(&ctx);
-      log()->error("roi job: cannot open decoder");
-      m_failed = true;
-      return false;
-    }
-
-    m_decoder.reset(ctx);
+    m_sidecar.frames.push_back(sidecar_frame{ t, *af.boxes });
     return true;
   }
 
-  void drain_decoder()
-  {
-    AVFrame* frame = av_frame_alloc();
-    if (!frame) { m_failed = true; return; }
-
-    while (avcodec_receive_frame(m_decoder.get(), frame) == 0)
-    {
-      handle_frame(frame);
-      av_frame_unref(frame);
-      if (m_failed) break;
-    }
-    av_frame_free(&frame);
-  }
-
-  bool ensure_encoder_open(const AVFrame* frame)
+private:
+  bool ensure_encoder_open(const AVFrame* frame, const analyzed_frame& af)
   {
     if (m_opened) return true;
 
     m_sidecar.width = frame->width;
     m_sidecar.height = frame->height;
-    m_sidecar.fps = m_frame_rate.den > 0
-      ? static_cast<double>(m_frame_rate.num) / m_frame_rate.den
+    m_sidecar.fps = af.frame_rate.den > 0
+      ? static_cast<double>(af.frame_rate.num) / af.frame_rate.den
       : 0.0;
 
     if (m_config.detect_only)
@@ -311,179 +273,15 @@ private:
 
     std::string error;
     if (!m_client.open(m_config.encode, frame->width, frame->height,
-          m_time_base.num, m_time_base.den, m_frame_rate.num, m_frame_rate.den,
+          af.time_base.num, af.time_base.den, af.frame_rate.num, af.frame_rate.den,
           AV_PIX_FMT_YUV420P, error))
     {
       log()->error("roi job: encoder refused the stream: {}", error);
-      m_failed = true;
       return false;
     }
     m_opened = true;
     log()->info("roi job: encoding {}x{} @ {:.2f} fps -> {}", frame->width, frame->height,
       m_sidecar.fps, m_config.encode.output_path);
-    return true;
-  }
-
-  /// The frame's position in the file's own timeline. Everything that has to be reproducible
-  /// across runs is measured against this rather than against the clock.
-  double frame_time_sec(const AVFrame* frame) const
-  {
-    const int64_t pts = frame->best_effort_timestamp != AV_NOPTS_VALUE
-      ? frame->best_effort_timestamp
-      : frame->pts;
-    if (pts == AV_NOPTS_VALUE || m_time_base.den <= 0)
-    {
-      return m_frame_rate.num > 0
-        ? static_cast<double>(m_frames_sent) * m_frame_rate.den / m_frame_rate.num
-        : 0.0;
-    }
-    return static_cast<double>(pts) * m_time_base.num / m_time_base.den;
-  }
-
-  bool detection_due(double t) const
-  {
-    if (m_config.detect_fps <= 0) return true;         // every frame
-    if (m_detect_passes == 0) return true;             // the first frame always is
-    return t + 1e-9 >= m_next_detect_at;
-  }
-
-  void run_detection(const AVFrame* frame, double t)
-  {
-    if (!ensure_bgr_context(frame)) return;
-
-    decoded_frame bgr;
-    bgr.width = frame->width;
-    bgr.height = frame->height;
-    bgr.bgr.resize(static_cast<size_t>(frame->width) * frame->height * 3);
-    bgr.captured_at = std::chrono::system_clock::now();
-
-    uint8_t* dst[4] = { bgr.bgr.data(), nullptr, nullptr, nullptr };
-    int lines[4] = { frame->width * 3, 0, 0, 0 };
-    sws_scale(m_bgr_ctx.get(), frame->data, frame->linesize, 0, frame->height, dst, lines);
-
-    if (const char* dump = std::getenv("ROI_DEBUG_DUMP_BGR"))
-    {
-      static int n = 0;
-      if (n < 2)
-      {
-        std::string name = std::string(dump) + "/pass" + std::to_string(n) + ".ppm";
-        FILE* f = std::fopen(name.c_str(), "wb");
-        std::fprintf(f, "P6\n%d %d\n255\n", bgr.width, bgr.height);
-        for (size_t i = 0; i < bgr.bgr.size(); i += 3)
-        { std::fputc(bgr.bgr[i+2], f); std::fputc(bgr.bgr[i+1], f); std::fputc(bgr.bgr[i], f); }
-        std::fclose(f);
-        log()->info("roi job: dumped {} ({}x{}) at t={:.2f}", name, bgr.width, bgr.height, t);
-        ++n;
-      }
-    }
-
-    m_held.clear();
-    m_detector.process_frame(bgr, [this](const final_detection& det) {
-      roi_box box;
-      box.kind = kind_name(det.kind);
-      box.x = det.bbox.x;
-      box.y = det.bbox.y;
-      box.width = det.bbox.width;
-      box.height = det.bbox.height;
-      box.track_id = det.track_id;
-      box.confidence = det.confidence;
-      m_held.push_back(std::move(box));
-    });
-
-    ++m_detect_passes;
-    if (m_config.detect_fps > 0)
-    {
-      // Advanced from the deadline, not from this frame: measuring from where we actually landed
-      // would let the interval drift longer by however late each frame was.
-      const double period = 1.0 / m_config.detect_fps;
-      m_next_detect_at = (m_detect_passes == 1 ? t : m_next_detect_at) + period;
-      if (m_next_detect_at <= t)
-        m_next_detect_at = t + period;
-    }
-  }
-
-  bool ensure_bgr_context(const AVFrame* frame)
-  {
-    const auto format = static_cast<AVPixelFormat>(frame->format);
-    if (m_bgr_ctx && frame->width == m_bgr_width && frame->height == m_bgr_height
-      && format == m_bgr_format)
-      return true;
-
-    bool full_range = false;
-    const AVPixelFormat src = normalize_pixel_format(format, full_range);
-    m_bgr_ctx.reset(sws_getContext(frame->width, frame->height, src,
-      frame->width, frame->height, AV_PIX_FMT_BGR24, SWS_BILINEAR, nullptr, nullptr, nullptr));
-    if (!m_bgr_ctx)
-    {
-      log()->error("roi job: cannot build BGR converter");
-      m_failed = true;
-      return false;
-    }
-    if (full_range)
-    {
-      const int* coeffs = sws_getCoefficients(SWS_CS_ITU601);
-      sws_setColorspaceDetails(m_bgr_ctx.get(), coeffs, 1, coeffs, 1, 0, 1 << 16, 1 << 16);
-    }
-    m_bgr_width = frame->width;
-    m_bgr_height = frame->height;
-    m_bgr_format = format;
-    return true;
-  }
-
-  /// Tightly packed YUV420P, which is what the encoder was opened with. A frame already in that
-  /// format is only repacked — its planes carry alignment padding the wire does not — and anything
-  /// else is converted.
-  bool pack_yuv420p(const AVFrame* frame)
-  {
-    const int needed = av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
-      frame->width, frame->height, 1);
-    if (needed < 0)
-    {
-      m_failed = true;
-      return false;
-    }
-    m_yuv.resize(static_cast<size_t>(needed));
-
-    const auto format = static_cast<AVPixelFormat>(frame->format);
-    if (format == AV_PIX_FMT_YUV420P)
-    {
-      return av_image_copy_to_buffer(m_yuv.data(), needed, frame->data, frame->linesize,
-        format, frame->width, frame->height, 1) >= 0;
-    }
-
-    bool full_range = false;
-    const AVPixelFormat src = normalize_pixel_format(format, full_range);
-    if (!m_yuv_ctx || frame->width != m_yuv_width || frame->height != m_yuv_height
-      || format != m_yuv_format)
-    {
-      m_yuv_ctx.reset(sws_getContext(frame->width, frame->height, src,
-        frame->width, frame->height, AV_PIX_FMT_YUV420P,
-        SWS_BILINEAR, nullptr, nullptr, nullptr));
-      if (!m_yuv_ctx)
-      {
-        log()->error("roi job: cannot build YUV420P converter");
-        m_failed = true;
-        return false;
-      }
-      if (full_range)
-      {
-        const int* coeffs = sws_getCoefficients(SWS_CS_ITU601);
-        sws_setColorspaceDetails(m_yuv_ctx.get(), coeffs, 1, coeffs, 0, 0, 1 << 16, 1 << 16);
-      }
-      m_yuv_width = frame->width;
-      m_yuv_height = frame->height;
-      m_yuv_format = format;
-    }
-
-    uint8_t* dst[4] = { nullptr, nullptr, nullptr, nullptr };
-    int lines[4] = { 0, 0, 0, 0 };
-    if (av_image_fill_arrays(dst, lines, m_yuv.data(), AV_PIX_FMT_YUV420P,
-          frame->width, frame->height, 1) < 0)
-    {
-      m_failed = true;
-      return false;
-    }
-    sws_scale(m_yuv_ctx.get(), frame->data, frame->linesize, 0, frame->height, dst, lines);
     return true;
   }
 
@@ -549,7 +347,7 @@ private:
       }
     };
 
-    for (const auto& b : m_held)
+    for (const auto& b : *m_boxes)
     {
       const int32_t* body = kind_qp_delta(b.kind);
       if (!body)
@@ -565,7 +363,7 @@ private:
         paint(b.x - pad, b.y - pad, b.x + b.width + pad, b.y + b.height + pad, pad_delta);
       }
     }
-    for (const auto& b : m_held)
+    for (const auto& b : *m_boxes)
     {
       const int32_t* body = kind_qp_delta(b.kind);
       if (!body)
@@ -613,7 +411,7 @@ private:
     m_mask_height = std::max(1, (frame_height + scale - 1) / scale);
     m_mask.assign(static_cast<size_t>(m_mask_width) * m_mask_height, 0);
 
-    for (const auto& b : m_held)
+    for (const auto& b : *m_boxes)
     {
       const uint8_t level = mask_level(b.kind);
       if (level == 0)
@@ -649,114 +447,11 @@ private:
     }
   }
 
-  void handle_frame(const AVFrame* frame)
-  {
-    if (frame->width <= 0 || frame->height <= 0) return;
-    if (!ensure_encoder_open(frame)) return;
-
-    const double t = frame_time_sec(frame);
-    if (detection_due(t))
-      run_detection(frame, t);
-    if (m_failed) return;
-
-    // Without an encoder the frame is already spent: the detector has had it, the regions are
-    // recorded below, and YUV420P is the wire's format rather than the sidecar's.
-    if (m_config.detect_only)
-    {
-      m_sidecar.frames.push_back(sidecar_frame{ t, m_held });
-      ++m_frames_sent;
-      // Progress, because this is the one mode with nothing on the other end to report it: a
-      // minute of silence over a long clip cannot be told from a hang. Once per second of
-      // content, measured on the file's own timeline like everything else here.
-      constexpr double kProgressIntervalSec = 1.0;
-      if (t + 1e-9 >= m_next_progress_at)
-      {
-        log()->info("roi job: detected through t={:.2f} ({} frames, {} passes)", t,
-          m_frames_sent, m_detect_passes);
-        m_next_progress_at = t + kProgressIntervalSec;
-      }
-      return;
-    }
-
-    if (!pack_yuv420p(frame)) return;
-
-    // The encoder rejects a timeline that goes backwards, and a file with B-frames or a broken
-    // timestamp can hand us one. Nudging is right where the decoder's order is already correct
-    // and only the values are not; it costs one tick of the time base.
-    int64_t pts = frame->best_effort_timestamp != AV_NOPTS_VALUE
-      ? frame->best_effort_timestamp
-      : frame->pts;
-    if (pts == AV_NOPTS_VALUE)
-      pts = m_last_pts + 1;
-    if (m_frames_sent > 0 && pts <= m_last_pts)
-      pts = m_last_pts + 1;
-
-    bool sent = false;
-    if (m_config.regions == roi_region_form::mask)
-    {
-      build_mask(frame->width, frame->height);
-      sent = m_client.send_frame_mask(pts, m_yuv.data(), m_yuv.size(),
-        m_mask.data(), m_mask_width, m_mask_height);
-    }
-    else if (m_config.regions == roi_region_form::qp_map)
-    {
-      build_qp_map(frame->width, frame->height);
-      sent = m_client.send_frame_qp_map(pts, m_yuv.data(), m_yuv.size(),
-        m_qp_block, m_qp_cols, m_qp_rows, m_qp_width, m_qp_height,
-        m_qp_deltas.data(), m_qp_deltas.size());
-      if (sent && !m_config.qpmap_json_path.empty())
-      {
-        if (m_qpmap.width == 0)
-        {
-          m_qpmap.width = frame->width;
-          m_qpmap.height = frame->height;
-          m_qpmap.block = m_qp_block;
-        }
-        m_qpmap.frames.push_back(
-          qpmap_sidecar_frame{ t, m_qp_cols, m_qp_rows, m_qp_deltas });
-      }
-    }
-    else
-    {
-      sent = m_client.send_frame(pts, m_yuv.data(), m_yuv.size(), m_held);
-    }
-
-    if (!sent)
-    {
-      log()->error("roi job: the encoder stopped accepting frames after {}", m_frames_sent);
-      m_failed = true;
-      return;
-    }
-
-    m_sidecar.frames.push_back(sidecar_frame{ t, m_held });
-    m_last_pts = pts;
-    ++m_frames_sent;
-  }
-
   const roi_job_config& m_config;
-  pipeline& m_detector;
   roi_stream_client& m_client;
 
-  avcodec_context_ptr m_decoder;
-  AVRational m_time_base{ 1, 1000 };
-  AVRational m_frame_rate{ 25, 1 };
-
-  sws_context_ptr m_bgr_ctx;
-  int m_bgr_width = 0;
-  int m_bgr_height = 0;
-  AVPixelFormat m_bgr_format = AV_PIX_FMT_NONE;
-
-  sws_context_ptr m_yuv_ctx;
-  int m_yuv_width = 0;
-  int m_yuv_height = 0;
-  AVPixelFormat m_yuv_format = AV_PIX_FMT_NONE;
-  std::vector<uint8_t> m_yuv;
-
-  // The regions in force. Carried forward between detection passes, which is what makes a clip
-  // detected at 2 Hz encodable at 30 fps without the boxes flickering in and out.
-  std::vector<roi_box> m_held;
-  double m_next_detect_at = 0;
-  int64_t m_detect_passes = 0;
+  // The regions of the frame being sent; owned by the analyzer.
+  const std::vector<roi_box>* m_boxes = nullptr;
 
   std::vector<uint8_t> m_mask;
   int m_mask_width = 0;
@@ -770,10 +465,7 @@ private:
   int m_qp_height = 0;
 
   bool m_opened = false;
-  bool m_failed = false;
-  int64_t m_frames_sent = 0;
   double m_next_progress_at = 0;
-  int64_t m_last_pts = 0;
 
   sidecar m_sidecar;
   qpmap_sidecar m_qpmap;
@@ -890,7 +582,13 @@ bool run_roi_file_job(const roi_job_config& config)
   pipeline detector(pcfg, cfg.model_dir);
   roi_stream_client client;
 
-  auto sink = std::make_shared<roi_encode_sink>(cfg, detector, client);
+  roi_encode_sink encode(cfg, client);
+  file_analyzer_config acfg;
+  acfg.detect_fps = cfg.detect_fps;
+  auto sink = std::make_shared<file_analyzer>(acfg, &detector,
+    [&encode](file_analyzer& analyzer, const analyzed_frame& frame) {
+      return encode.handle_frame(analyzer, frame);
+    });
 
   std::mutex done_mutex;
   std::condition_variable done_cv;
@@ -924,10 +622,10 @@ bool run_roi_file_job(const roi_job_config& config)
 
   if (sink->failed())
   {
-    log()->error("roi job: failed after {} frames", sink->frames_sent());
+    log()->error("roi job: failed after {} frames", sink->frames());
     return false;
   }
-  if (sink->frames_sent() == 0)
+  if (sink->frames() == 0)
   {
     log()->error("roi job: no frames were decoded from {}", cfg.input_path);
     return false;
@@ -939,7 +637,7 @@ bool run_roi_file_job(const roi_job_config& config)
     // nothing, so "few detections" and "few frames looked at" are different diagnoses and
     // this is the only place that can tell them apart.
     log()->info("roi job: {} frames decoded, {} detection passes, {} gated by motion, "
-      "nothing encoded", sink->frames_sent(), sink->detections_run(), detector.gated_frames());
+      "nothing encoded", sink->frames(), sink->detections_run(), detector.gated_frames());
   }
   else
   {
@@ -952,7 +650,7 @@ bool run_roi_file_job(const roi_job_config& config)
     }
 
     log()->info("roi job: {} frames sent, {} detection passes, {} packets, {} bytes written{}",
-      sink->frames_sent(), sink->detections_run(), report.packets, report.bytes,
+      sink->frames(), sink->detections_run(), report.packets, report.bytes,
       report.regions_dropped > 0
         ? std::string(", ") + std::to_string(report.regions_dropped) + " regions dropped"
         : std::string());
@@ -960,7 +658,7 @@ bool run_roi_file_job(const roi_job_config& config)
 
   if (!cfg.boxes_json_path.empty())
   {
-    if (!sink->regions().write(cfg.boxes_json_path))
+    if (!encode.regions().write(cfg.boxes_json_path))
     {
       log()->error("roi job: cannot write {}", cfg.boxes_json_path);
       return false;
@@ -970,7 +668,7 @@ bool run_roi_file_job(const roi_job_config& config)
 
   if (!cfg.qpmap_json_path.empty())
   {
-    if (!sink->qp_maps().write(cfg.qpmap_json_path))
+    if (!encode.qp_maps().write(cfg.qpmap_json_path))
     {
       log()->error("roi job: cannot write {}", cfg.qpmap_json_path);
       return false;

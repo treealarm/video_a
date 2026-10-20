@@ -13,6 +13,7 @@
 
 #include "grpc_layer/analytics_service_impl.h"
 #include "grpc_layer/detection_queue.h"
+#include "grpc_layer/frame_analysis_service_impl.h"
 #include "ffmpeg_log.h"
 #include "logging.h"
 #include "roi/roi_file_job.h"
@@ -442,10 +443,20 @@ int main(int argc, char** argv)
 
   analytics_service_impl service(watches, queue, model_dir);
 
+  // Offline passes over files, served beside the watches on the same port. Optional and bounded:
+  // each pass loads its own models, so the default is one at a time.
+  int max_file_jobs = 1;
+  if (const char* v = std::getenv("ANALYTICS_MAX_FILE_JOBS"); v && *v)
+    max_file_jobs = require_env_int("ANALYTICS_MAX_FILE_JOBS", 1, 64);
+  frame_analysis_service_impl file_analysis(model_dir, reid_embed_interval_sec, max_file_jobs);
+
   const std::string server_address = "0.0.0.0:" + grpc_port;
   grpc::ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
+  builder.RegisterService(&file_analysis);
+  // A decoded 4K frame is ~12 MB; the default send cap would refuse it.
+  builder.SetMaxSendMessageSize(-1);
 
   auto server = builder.BuildAndStart();
   if (!server)

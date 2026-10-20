@@ -120,6 +120,11 @@ pipeline::pipeline(pipeline_config config, const std::string& model_dir)
   , m_plate_embed(std::make_unique<appearance_embedder>("plate_embedder", model_dir + "/plate_embedder"))
   , m_motion_gate_threshold(motion_gate_threshold_from_env())
 {
+  if (m_config.motion_gate_threshold)
+  {
+    const float v = *m_config.motion_gate_threshold;
+    m_motion_gate_threshold = v < 0.0f ? kMotionGateOff : std::clamp(v, 0.0f, 1.0f);
+  }
 }
 
 pipeline::~pipeline() = default;

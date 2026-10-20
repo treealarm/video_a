@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -21,6 +22,10 @@ constexpr int k_motion_grid_w = 80;
 constexpr int k_motion_grid_h = 45;
 
 std::vector<float> grayscale_motion_grid(const decoded_frame& frame);
+
+// The same grid built straight from an 8-bit luma plane, for callers that hold YUV rather than
+// BGR. Cells average the same way, so grids from either source compare with each other.
+std::vector<float> luma_motion_grid(const uint8_t* luma, int stride, int width, int height);
 
 // Estimate how the scene shifted between two grids (or two decoded frames).
 std::optional<global_motion_result> estimate_global_motion(
