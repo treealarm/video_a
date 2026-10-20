@@ -53,4 +53,6 @@ struct final_detection {
   std::vector<float> embedding;
   // True only on the frame the embedding was freshly recomputed; false on the carried-along repeats.
   bool embedding_is_fresh = false;
+  // The embedder's model_id() when `embedding` is set: which space the vector belongs to.
+  std::string embedding_model;
 };

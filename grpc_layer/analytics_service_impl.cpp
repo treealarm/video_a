@@ -377,6 +377,7 @@ grpc::Status analytics_service_impl::StreamDetections(
     {
       *evt.mutable_embedding() = {item->detection.embedding.begin(), item->detection.embedding.end()};
       evt.set_embedding_is_fresh(item->detection.embedding_is_fresh);
+      evt.set_embedding_model(item->detection.embedding_model);
     }
 
     if (!writer->Write(evt))
@@ -464,6 +465,7 @@ grpc::Status analytics_service_impl::EmbedImage(
     response->set_success(true);
     response->set_message("ok");
     response->mutable_embedding()->Assign(embedding.begin(), embedding.end());
+    response->set_embedding_model(embedder->model_id());
     auto* bbox = response->mutable_bbox();
     bbox->set_x(probe_box.x);
     bbox->set_y(probe_box.y);

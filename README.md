@@ -25,14 +25,19 @@ mode, `x64-linux` triplet) — see `CMakeLists.txt`.
 Requires these environment variables (see `.env`):
 
 - `ANALYTICS_GRPC_PORT` — gRPC listen port.
-- `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector.xml/.bin` (or `.onnx`),
-  `face_detector.xml/.bin`, `plate_detector.xml/.bin`, `plate_ocr.xml/.bin`,
-  `person_embedder.xml/.bin` (OpenVINO IR pairs). `primary_detector` (person/vehicle,
-  YOLOv11-style), `face_detector` (OMZ face-detection-0205), `plate_detector` (YOLOv8n
-  single-class plate detector, see Docker below) and `person_embedder` (body re-id, e.g. OSNet
-  512-d) are wired in; `plate_ocr` is still a stub that returns empty results, so plates are
-  located but not read. A missing model file puts that detector into stub mode with a startup
-  warning.
+- `ANALYTICS_MODEL_PATH` — directory expected to contain `primary_detector`, `face_detector`,
+  `plate_detector`, `plate_ocr` and `person_embedder`, each as an OpenVINO IR pair (`.xml/.bin`)
+  or an `.onnx` (which wins when both are present). `primary_detector` (person/vehicle, YOLO26s;
+  either Ultralytics output layout is read, end-to-end or not), `face_detector` (OMZ
+  face-detection-0205), `plate_detector` (YOLO26n single-class plate detector) and
+  `person_embedder` (body re-id, OMZ person-reidentification-retail-0277, 256-d) are wired in;
+  `plate_ocr` is still a stub that returns empty results, so plates are located but not read. A
+  missing model file puts that detector into stub mode with a startup warning.
+  `scripts/fetch-models.sh` fills the directory from the sources in `MODEL_LICENSES.md`. The log
+  line of each model at startup says what was loaded: a detector's input and output shape, an
+  embedder's `id` (the `embedding_model` it stamps on every vector), `dim` and input `norm` —
+  `bgr255` (or `rgb255`) when the IR normalizes inside its graph, as Open Model Zoo's do, otherwise `imagenet`
+  or `arcface`, and where that choice came from.
 - `ANALYTICS_DEVICE` — OpenVINO device selection (`CPU`/`GPU`, or a virtual device such as
   `AUTO`/`MULTI:GPU,CPU`). A real device is checked against `ov::Core::get_available_devices()` at
   startup and a missing one is a startup failure, because a detector that cannot reach its device
@@ -140,33 +145,12 @@ missing (override the path with `TA_VMS_DIR`).
 The image bakes `models/` in (the Dockerfile's `models` stage, `ANALYTICS_MODEL_PATH` defaults to
 `/models`) so a container works with no extra volume or fetch step. `models/` must hold regular
 files only: a symlink reaches the build context as a link and lands in the image dangling, which
-the worker reports as a missing model. `models/primary_detector.*` is a YOLOv11n export and
-`models/plate_detector.*` a YOLOv8n fine-tune, both AGPL-3.0 like Ultralytics YOLO itself, which
-is why this worker is AGPL too; `MODEL_LICENSES.md` lists every model with its source and licence.
-`models/` itself is gitignored; regenerate
-`primary_detector.xml/.bin` with `pip install ultralytics && python -c "from ultralytics import
-YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"`, and fetch the face detector from
-OMZ plus a YOLOv8 single-class plate detector (the OMZ barrier SSD is Chinese front-facing only and
-mis-fires on badges like "Pajero" under a top-down rear camera):
-
-```sh
-OMZ=https://storage.openvinotoolkit.org/repositories/open_model_zoo/2023.0/models_bin/1
-for ext in xml bin; do
-  curl -sSLo "models/face_detector.$ext" \
-    "$OMZ/face-detection-0205/FP32/face-detection-0205.$ext"
-done
-# Plate: YOLOv8n fine-tuned on plates (Arijit1080 / Licence-Plate-Detection-using-YOLO-V8),
-# exported to OpenVINO IR as models/plate_detector.{xml,bin}.
-curl -sSLo /tmp/yolov8n-plate.pt \
-  "https://raw.githubusercontent.com/Arijit1080/Licence-Plate-Detection-and-Recognition-using-YOLO-V8-EasyOCR/main/best.pt"
-python - <<'PY'
-from ultralytics import YOLO
-m = YOLO("/tmp/yolov8n-plate.pt")
-out = m.export(format="openvino", imgsz=640)
-print(out)
-PY
-# Rename the export's best.xml/.bin into models/plate_detector.xml/.bin
-```
+the worker reports as a missing model. `models/primary_detector.*` (YOLO26s) and
+`models/plate_detector.onnx` (YOLO26n) are Ultralytics models, AGPL-3.0 like Ultralytics YOLO itself, which is
+why this worker is AGPL too; `MODEL_LICENSES.md` lists every model with its source and licence.
+`models/` itself is gitignored; `scripts/fetch-models.sh` rebuilds it from those sources, checking
+each download against a recorded checksum and exporting the primary detector with pinned
+Ultralytics/OpenVINO versions. Then `scripts/push-models-image.sh` publishes it for CI.
 
 Linking note: `openvino::openvino_intel_cpu_plugin` must be linked with `--whole-archive`
 (see `CMakeLists.txt`) — without it, the static CPU plugin silently drops object files for less
