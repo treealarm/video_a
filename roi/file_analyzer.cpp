@@ -13,6 +13,7 @@
 #include "logging.h"
 
 extern "C" {
+#include <libavutil/display.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 }
@@ -62,6 +63,46 @@ float stddev(double sum, double sum_sq, size_t n)
   const double mean = sum / static_cast<double>(n);
   const double var = std::max(0.0, sum_sq / static_cast<double>(n) - mean * mean);
   return static_cast<float>(std::sqrt(var));
+}
+
+/// Clockwise degrees, 0/90/180/270, that the stream's display matrix turns the picture by.
+int display_rotation(const AVCodecParameters& par)
+{
+  const AVPacketSideData* sd = av_packet_side_data_get(par.coded_side_data, par.nb_coded_side_data,
+    AV_PKT_DATA_DISPLAYMATRIX);
+  if (!sd || sd->size < 9 * sizeof(int32_t)) return 0;
+  // av_display_rotation_get is counter-clockwise.
+  const double ccw = av_display_rotation_get(reinterpret_cast<const int32_t*>(sd->data));
+  if (std::isnan(ccw)) return 0;
+  return ((-static_cast<int>(std::lround(ccw / 90.0)) * 90) % 360 + 360) % 360;
+}
+
+/// `src` (w x h, BGR) turned clockwise by `rotation`.
+std::vector<uint8_t> turn_bgr(const std::vector<uint8_t>& src, int w, int h, int rotation)
+{
+  std::vector<uint8_t> out(src.size());
+  const int ow = rotation == 180 ? w : h;
+  for (int y = 0; y < h; ++y)
+  {
+    const uint8_t* row = src.data() + static_cast<size_t>(y) * w * 3;
+    for (int x = 0; x < w; ++x)
+    {
+      const int ox = rotation == 90 ? h - 1 - y : rotation == 180 ? w - 1 - x : y;
+      const int oy = rotation == 90 ? x : rotation == 180 ? h - 1 - y : w - 1 - x;
+      uint8_t* d = out.data() + (static_cast<size_t>(oy) * ow + ox) * 3;
+      d[0] = row[x * 3]; d[1] = row[x * 3 + 1]; d[2] = row[x * 3 + 2];
+    }
+  }
+  return out;
+}
+
+/// A normalized box found on the picture turned clockwise by `rotation`, back on the stored one.
+void unturn_box(roi_box& b, int rotation)
+{
+  const float x = b.x, y = b.y, w = b.width, h = b.height;
+  if (rotation == 90) { b.x = y; b.y = 1 - (x + w); b.width = h; b.height = w; }
+  else if (rotation == 180) { b.x = 1 - (x + w); b.y = 1 - (y + h); }
+  else if (rotation == 270) { b.x = 1 - (y + h); b.y = x; b.width = h; b.height = w; }
 }
 
 }  // namespace
@@ -130,6 +171,10 @@ bool file_analyzer::ensure_decoder(const media_packet& pkt)
   }
 
   m_decoder.reset(ctx);
+  m_rotation = display_rotation(*pkt.codec_parameters);
+  if (m_rotation != 0)
+    log()->info("roi job: the file is displayed turned {} degrees clockwise{}", m_rotation,
+      m_config.upright ? "; detecting on the upright picture" : "");
   return true;
 }
 
@@ -185,6 +230,15 @@ void file_analyzer::run_detection(const AVFrame* frame, double t)
   int lines[4] = { frame->width * 3, 0, 0, 0 };
   sws_scale(m_bgr_ctx.get(), frame->data, frame->linesize, 0, frame->height, dst, lines);
 
+  // The detector is trained on upright pictures: on an upside-down phone clip it finds next to
+  // nothing.
+  const int turn = m_config.upright ? m_rotation : 0;
+  if (turn != 0)
+  {
+    bgr.bgr = turn_bgr(bgr.bgr, bgr.width, bgr.height, turn);
+    if (turn != 180) std::swap(bgr.width, bgr.height);
+  }
+
   if (const char* dump = std::getenv("ROI_DEBUG_DUMP_BGR"))
   {
     static int n = 0;
@@ -202,7 +256,7 @@ void file_analyzer::run_detection(const AVFrame* frame, double t)
   }
 
   m_held.clear();
-  m_detector->process_frame(bgr, [this](const final_detection& det) {
+  m_detector->process_frame(bgr, [this, turn](const final_detection& det) {
     roi_box box;
     box.kind = kind_name(det.kind);
     box.x = det.bbox.x;
@@ -211,6 +265,7 @@ void file_analyzer::run_detection(const AVFrame* frame, double t)
     box.height = det.bbox.height;
     box.track_id = det.track_id;
     box.confidence = det.confidence;
+    unturn_box(box, turn);
     m_held.push_back(std::move(box));
   });
 

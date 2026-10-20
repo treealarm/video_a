@@ -72,7 +72,9 @@ message StreamHeader {
 }
 
 message BoundingBox {
-  // Normalized 0..1 from the top-left corner of the full frame.
+  // Normalized 0..1 from the top-left corner of the full frame, as stored -- the frames' own
+  // orientation. Detection runs on the picture turned the way the file's display matrix says
+  // to show it (a phone held sideways or upside down); the boxes are turned back.
   float x = 1;
   float y = 2;
   float width = 3;

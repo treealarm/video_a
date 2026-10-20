@@ -175,6 +175,7 @@ grpc::Status frame_analysis_service_impl::AnalyzeFile(
   file_analyzer_config acfg;
   acfg.detect_fps = request->detect_fps();
   acfg.scene_stats = request->include_scene_stats();
+  acfg.upright = true;
 
   fa::AnalyzeFileEvent event;
   auto sink = std::make_shared<file_analyzer>(acfg, detector.get(),
