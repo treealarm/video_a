@@ -66,6 +66,8 @@ WORKDIR /app
 COPY --from=builder /build/build/analytics-worker /app/analytics-worker
 COPY --from=builder /runtime-libs /app
 COPY --from=models / /models
+# What the models are and under which licences, beside them; the worker's own licence with it.
+COPY LICENSE MODEL_LICENSES.md /usr/share/doc/analytics-worker/
 
 ENV LD_LIBRARY_PATH=/app
 ENV ANALYTICS_MODEL_PATH=/models

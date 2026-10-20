@@ -117,10 +117,10 @@ missing (override the path with `TA_VMS_DIR`).
 The image bakes `models/` in (the Dockerfile's `models` stage, `ANALYTICS_MODEL_PATH` defaults to
 `/models`) so a container works with no extra volume or fetch step. `models/` must hold regular
 files only: a symlink reaches the build context as a link and lands in the image dangling, which
-the worker reports as a missing model. **Licensing note:** `models/primary_detector.*` is a
-YOLOv11n export, `models/plate_detector.*` a YOLOv8n fine-tune, and Ultralytics YOLO is AGPL-3.0 —
-baking them into a distributed/deployed image is a deliberate, not-yet-fully-reconciled call (see
-`ta_install/README.md`'s "Analytics models" section). `models/` itself is gitignored; regenerate
+the worker reports as a missing model. `models/primary_detector.*` is a YOLOv11n export and
+`models/plate_detector.*` a YOLOv8n fine-tune, both AGPL-3.0 like Ultralytics YOLO itself, which
+is why this worker is AGPL too; `MODEL_LICENSES.md` lists every model with its source and licence.
+`models/` itself is gitignored; regenerate
 `primary_detector.xml/.bin` with `pip install ultralytics && python -c "from ultralytics import
 YOLO; YOLO('yolo11n.pt').export(format='openvino', imgsz=640)"`, and fetch the face detector from
 OMZ plus a YOLOv8 single-class plate detector (the OMZ barrier SSD is Chinese front-facing only and
@@ -169,3 +169,9 @@ through a buildx named context:
 A tag that is not published fails the run with a message saying which script publishes it. The
 run logs in to Docker Hub with the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so pull
 requests from forks cannot build.
+
+## License
+
+GNU Affero General Public License v3.0 (`LICENSE`), because the worker loads and runs Ultralytics
+YOLO models, which are AGPL-3.0. The models have licences of their own: see `MODEL_LICENSES.md`.
+The rest of TreeAlarm VMS is MIT.
