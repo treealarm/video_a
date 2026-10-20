@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 
 #include <openvino/runtime/properties.hpp>
 
@@ -15,6 +17,44 @@ std::string env_or(const char* name, const std::string& fallback)
 {
   const char* v = std::getenv(name);
   return v ? v : fallback;
+}
+
+// A string the model's IR records under rt_info/<section>/<key>, or empty.
+std::string rt_string(const std::shared_ptr<ov::Model>& model, const char* section, const char* key)
+{
+  try
+  {
+    if (model->has_rt_info(section, key))
+      return model->get_rt_info<std::string>(section, key);
+  }
+  catch (const std::exception&)
+  {
+  }
+  return {};
+}
+
+// FNV-1a over the model file and its weights: stable across builds and platforms, unlike
+// std::hash, and enough to tell two model files apart.
+std::string content_hash(const std::string& path)
+{
+  std::filesystem::path weights = path;
+  weights = weights.extension() == ".xml" ? weights.replace_extension(".bin") : std::filesystem::path(path + ".data");
+  uint64_t h = 1469598103934665603ull;
+  std::vector<char> buf(1 << 16);
+  for (const auto& file : {std::filesystem::path(path), weights})
+  {
+    std::ifstream in(file, std::ios::binary);
+    while (in)
+    {
+      in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+      for (std::streamsize i = 0; i < in.gcount(); ++i)
+      {
+        h ^= static_cast<unsigned char>(buf[static_cast<size_t>(i)]);
+        h *= 1099511628211ull;
+      }
+    }
+  }
+  return fmt::format("{:016x}", h);
 }
 }
 
@@ -82,15 +122,49 @@ appearance_embedder::appearance_embedder(std::string model_label, const std::str
     if (m_dim <= 0)
       m_dim = 512;
 
-    // buffalo_l ArcFace and the old face_embedder path both use this scale; ImageNet mean/std
-    // would silently produce a useless space for the same weights. Chosen from the label only
-    // — a non-face 112x112 model must not be mis-normalized because of its input shape.
-    m_arcface_norm = m_label.find("face") != std::string::npos;
+    // The input normalization, from the model file first (see input_norm in the header).
+    const std::string declared = rt_string(model, "model_info", "embedder_input");
+    const bool self_normalizing = !rt_string(model, "conversion_parameters", "mean_values").empty() ||
+      !rt_string(model, "conversion_parameters", "scale_values").empty();
+    std::string norm_from;
+    if (declared == "bgr255" || declared == "rgb255" || declared == "imagenet" || declared == "arcface")
+    {
+      m_norm = declared == "bgr255" ? input_norm::bgr255
+        : declared == "rgb255" ? input_norm::rgb255
+        : declared == "imagenet" ? input_norm::imagenet : input_norm::arcface;
+      norm_from = "model_info/embedder_input";
+    }
+    else if (!declared.empty())
+    {
+      log()->warn("{}: model '{}' declares embedder_input='{}', which is not one of"
+        " bgr255/rgb255/imagenet/arcface — embedding disabled", m_label, resolved, declared);
+      return;
+    }
+    else if (self_normalizing)
+    {
+      const std::string reversed = rt_string(model, "conversion_parameters", "reverse_input_channels");
+      m_norm = reversed == "True" || reversed == "true" ? input_norm::bgr255 : input_norm::rgb255;
+      norm_from = "conversion_parameters: normalized inside the graph, reverse_input_channels="
+        + (reversed.empty() ? std::string("absent") : reversed);
+    }
+    else
+    {
+      // buffalo_l ArcFace and the old face_embedder path use the arcface scale; ImageNet mean/std
+      // would silently produce a useless space for the same weights.
+      m_norm = m_label.find("face") != std::string::npos ? input_norm::arcface : input_norm::imagenet;
+      norm_from = "the label (the model file does not say)";
+    }
+
+    const std::string name = rt_string(model, "conversion_parameters", "model_name");
+    m_model_id = !name.empty() ? name
+      : std::filesystem::path(resolved).filename().string() + "#" + content_hash(resolved);
 
     m_loaded = true;
-    log()->info("{}: loaded model='{}' device='{}' input={}x{} dim={} out={} norm={}",
-      m_label, resolved, device, m_input_w, m_input_h, m_dim, out_type.get_type_name(),
-      m_arcface_norm ? "arcface" : "imagenet");
+    log()->info("{}: loaded model='{}' id='{}' device='{}' input={}x{} dim={} out={} norm={} (from {})",
+      m_label, resolved, m_model_id, device, m_input_w, m_input_h, m_dim, out_type.get_type_name(),
+      m_norm == input_norm::bgr255 ? "bgr255" : m_norm == input_norm::rgb255 ? "rgb255"
+        : m_norm == input_norm::imagenet ? "imagenet" : "arcface",
+      norm_from);
   }
   catch (const std::exception& ex)
   {
@@ -158,11 +232,20 @@ std::vector<float> appearance_embedder::embed(const decoded_frame& frame, const 
         };
 
       const int idx = y * side_w + x;
+      if (m_norm == input_norm::bgr255 || m_norm == input_norm::rgb255)
+      {
+        // 0..255: the graph does its own normalization.
+        const bool bgr = m_norm == input_norm::bgr255;
+        dst[0 * plane + idx] = sample(bgr ? 0 : 2);
+        dst[1 * plane + idx] = sample(1);
+        dst[2 * plane + idx] = sample(bgr ? 2 : 0);
+        continue;
+      }
       // BGR source → RGB channels in NCHW.
       const float r = sample(2) / 255.0f;
       const float g = sample(1) / 255.0f;
       const float b = sample(0) / 255.0f;
-      if (m_arcface_norm)
+      if (m_norm == input_norm::arcface)
       {
         dst[0 * plane + idx] = (r - 0.5f) / 0.5f;
         dst[1 * plane + idx] = (g - 0.5f) / 0.5f;

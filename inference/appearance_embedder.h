@@ -23,6 +23,10 @@ public:
 
   bool loaded() const noexcept { return m_loaded; }
   int dim() const noexcept { return m_dim; }
+  // Names the embedding space: vectors are comparable only when this is equal. The model's own
+  // name where its IR records one (conversion_parameters/model_name, as Open Model Zoo IRs do),
+  // else the file name plus a hash of its contents. Empty while not loaded.
+  const std::string& model_id() const noexcept { return m_model_id; }
 
 private:
   std::string m_label;
@@ -35,8 +39,19 @@ private:
   int m_input_w = 128;
   int m_dim = 0;
   bool m_output_f16 = false;
-  // ArcFace (and similar face ReID) expects (x/255-0.5)/0.5 on a square crop; OSNet-style body
-  // models use ImageNet mean/std. Chosen from the model label (`face` in the string) at load
-  // time — never from input shape, so a non-face 112x112 model is not silently mis-normalized.
-  bool m_arcface_norm = false;
+  std::string m_model_id;
+
+  // What the model expects its input to look like. A wrong choice produces no error, only vectors
+  // that match nothing, so it is taken from the model file wherever the file says:
+  //   bgr255    BGR, 0..255, as decoded. An IR whose conversion recorded mean_values or
+  //             scale_values carries its normalization inside the graph, and with
+  //             reverse_input_channels the swap to RGB as well -- Open Model Zoo's
+  //             person-reidentification IRs are such, and take BGR.
+  //   rgb255    RGB, 0..255: the same, converted without reverse_input_channels.
+  //   imagenet  RGB, ImageNet mean/std -- an OSNet-style body model exported without them.
+  //   arcface   RGB, (x/255-0.5)/0.5 -- ArcFace-style face models.
+  // A file that says nothing falls back to the label (`face` in it -> arcface, else imagenet),
+  // never to the input shape, so a non-face 112x112 model is not mis-normalized.
+  enum class input_norm { bgr255, rgb255, imagenet, arcface };
+  input_norm m_norm = input_norm::imagenet;
 };

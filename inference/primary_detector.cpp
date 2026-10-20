@@ -34,8 +34,13 @@ float iou(const bbox_t& a, const bbox_t& b)
   return uni > 0.0f ? inter / uni : 0.0f;
 }
 
-// COCO class indices used by Ultralytics-trained YOLO exports (v8/v11 share the same
-// [1, 4+num_classes, num_boxes] output layout and COCO-80 class ordering).
+// COCO class indices used by Ultralytics-trained YOLO exports (v8, v11 and YOLO26 all use the
+// COCO-80 class ordering). Two output layouts are read, told apart by shape:
+//   [1, 4+num_classes, num_boxes]  every anchor's box (cx, cy, w, h) and class scores, NMS still to
+//                                  do -- v8/v11, and YOLO26 exported with end2end=False;
+//   [1, max_det, 6]                final boxes (x1, y1, x2, y2, score, class), the one-to-one head
+//                                  having already left one box per object -- YOLO26's default.
+// Both are in the letterboxed input's pixels.
 constexpr size_t kCocoPerson = 0;
 const std::unordered_set<size_t> kCocoVehicles = { 2, 3, 5, 7 }; // car, motorcycle, bus, truck
 
@@ -94,9 +99,15 @@ primary_detector::primary_detector(const std::string& model_path)
       m_input_width = static_cast<int>(input_shape[3]);
     }
 
+    // Which of the two output layouts decode_output() will read (see the top of this file).
+    const auto out_shape = m_compiled.output().get_partial_shape();
+    const bool end_to_end = out_shape.rank().is_static() && out_shape.size() == 3 &&
+      out_shape[2].is_static() && out_shape[2].get_length() == 6;
+
     m_model_loaded = true;
-    log()->info("primary_detector: loaded '{}' device='{}' input={}x{}",
-      resolved, device, m_input_width, m_input_height);
+    log()->info("primary_detector: loaded '{}' device='{}' input={}x{} output={} ({})",
+      resolved, device, m_input_width, m_input_height, out_shape.to_string(),
+      end_to_end ? "end-to-end, final boxes" : "per-anchor scores, NMS here");
   }
   catch (const std::exception& ex)
   {
@@ -159,50 +170,69 @@ std::vector<raw_detection> primary_detector::decode_output(
   const auto shape = output.get_shape();
   if (shape.size() != 3) return {};
 
-  const size_t attrs = shape[1];
-  const size_t boxes = shape[2];
-  if (attrs < 5) return {};
-
-  const size_t num_classes = attrs - 4;
   const auto* data = output.data<const float>();
-  auto at = [&](size_t attr, size_t box) { return data[attr * boxes + box]; };
-
   std::vector<raw_detection> raw;
-  for (size_t b = 0; b < boxes; ++b)
+
+  // One box in input pixels (left, top, width, height) of COCO class `cls` -> a detection in frame
+  // units.
+  auto add = [&](float x1, float y1, float bw, float bh, float score, size_t cls)
   {
-    float best = 0.0f;
-    size_t best_cls = 0;
-    for (size_t c = 0; c < num_classes; ++c)
-    {
-      const float score = at(4 + c, b);
-      if (score > best) { best = score; best_cls = c; }
-    }
-    if (best < kMinRawConfidence) continue;
+    if (score < kMinRawConfidence) return;
 
     detection_kind kind;
-    if (best_cls == kCocoPerson) kind = detection_kind::person;
-    else if (kCocoVehicles.contains(best_cls)) kind = detection_kind::vehicle;
-    else continue;
+    if (cls == kCocoPerson) kind = detection_kind::person;
+    else if (kCocoVehicles.contains(cls)) kind = detection_kind::vehicle;
+    else return;
 
-    const float cx = at(0, b);
-    const float cy = at(1, b);
-    const float bw = at(2, b);
-    const float bh = at(3, b);
-    const float x1 = (cx - bw / 2.0f - static_cast<float>(meta.pad_x)) / meta.scale;
-    const float y1 = (cy - bh / 2.0f - static_cast<float>(meta.pad_y)) / meta.scale;
+    const float fx1 = (x1 - static_cast<float>(meta.pad_x)) / meta.scale;
+    const float fy1 = (y1 - static_cast<float>(meta.pad_y)) / meta.scale;
     const float ww = bw / meta.scale;
     const float hh = bh / meta.scale;
 
     raw_detection d;
     d.kind = kind;
-    d.confidence = best;
-    d.bbox.x = std::clamp(x1 / static_cast<float>(frame_w), 0.0f, 1.0f);
-    d.bbox.y = std::clamp(y1 / static_cast<float>(frame_h), 0.0f, 1.0f);
+    d.confidence = score;
+    d.bbox.x = std::clamp(fx1 / static_cast<float>(frame_w), 0.0f, 1.0f);
+    d.bbox.y = std::clamp(fy1 / static_cast<float>(frame_h), 0.0f, 1.0f);
     d.bbox.width = std::clamp(ww / static_cast<float>(frame_w), 0.0f, 1.0f);
     d.bbox.height = std::clamp(hh / static_cast<float>(frame_h), 0.0f, 1.0f);
     raw.push_back(d);
+  };
+
+  if (shape[2] == 6)
+  {
+    // End-to-end: rows of final boxes, best first; the rows past the last object score ~0.
+    for (size_t b = 0; b < shape[1]; ++b)
+    {
+      const float* r = data + b * 6;
+      if (r[5] < 0.0f) continue;
+      add(r[0], r[1], r[2] - r[0], r[3] - r[1], r[4], static_cast<size_t>(std::lround(r[5])));
+    }
+  }
+  else
+  {
+    const size_t attrs = shape[1];
+    const size_t boxes = shape[2];
+    if (attrs < 5) return {};
+
+    const size_t num_classes = attrs - 4;
+    auto at = [&](size_t attr, size_t box) { return data[attr * boxes + box]; };
+    for (size_t b = 0; b < boxes; ++b)
+    {
+      float best = 0.0f;
+      size_t best_cls = 0;
+      for (size_t c = 0; c < num_classes; ++c)
+      {
+        const float score = at(4 + c, b);
+        if (score > best) { best = score; best_cls = c; }
+      }
+      const float cx = at(0, b), cy = at(1, b), bw = at(2, b), bh = at(3, b);
+      add(cx - bw / 2.0f, cy - bh / 2.0f, bw, bh, best, best_cls);
+    }
   }
 
+  // NMS by kind for both layouts. The end-to-end head leaves one box per object and class, but car,
+  // truck and bus are one kind here, and the same vehicle sometimes comes out as two of them.
   std::sort(raw.begin(), raw.end(), [](const raw_detection& a, const raw_detection& b) { return a.confidence > b.confidence; });
 
   std::vector<raw_detection> kept;

@@ -108,9 +108,10 @@ plate_detector::plate_detector(const std::string& model_path)
     }
 
     m_model_loaded = true;
-    log()->info("plate_detector: loaded '{}' device='{}' input={}x{} layout={} backend={}",
+    log()->info("plate_detector: loaded '{}' device='{}' input={}x{} layout={} output={} backend={}",
       resolved, device, m_input_width, m_input_height,
-      m_input_nhwc ? "NHWC" : "NCHW", m_yolo ? "yolo" : "ssd-barrier");
+      m_input_nhwc ? "NHWC" : "NCHW", m_compiled.output().get_partial_shape().to_string(),
+      m_yolo ? "yolo" : "ssd-barrier");
   }
   catch (const std::exception& ex)
   {

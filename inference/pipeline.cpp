@@ -246,6 +246,8 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
       }
     }
     out.embedding = cached.value;
+    if (!out.embedding.empty())
+      out.embedding_model = embedder->model_id();
   };
 
   for (const auto& t : tracked)
@@ -265,6 +267,7 @@ void pipeline::process_frame(const decoded_frame& frame, const std::function<voi
           .crop_jpeg = {},
           .embedding = {},
           .embedding_is_fresh = false,
+          .embedding_model = {},
         };
         if (m_config.attach_debug_crops)
           out.crop_jpeg = encode_crop_jpeg(crop_region(frame, t.bbox));

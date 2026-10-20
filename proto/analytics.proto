@@ -1,6 +1,6 @@
 // The analytics contract. It lives in two places, byte for byte the same, and this header is
 // worded so that it stays true in both: the canonical file is video_a/proto/analytics.proto,
-// and ta_vms carries a vendored copy at web_vms/VmsAnalyticsSingleton/proto/analytics.proto.
+// and ta_vms carries a vendored copy at dotnet/VmsAnalyticsSingleton/proto/analytics.proto.
 // Both sides generate code from their own copy, so a change goes into both in one step -- an
 // empty `diff` between them is the whole of the check.
 //
@@ -105,7 +105,8 @@ message DetectionEvent {
   // persisting this is entirely the caller's concern (video_a is stateless).
   bytes crop_jpeg = 10;
   // L2-normalized appearance embedding of the object, for downstream re-identification. The
-  // embedding space is implied by `kind` (PERSON -> body/OSNet, FACE -> face/ArcFace). Present on
+  // embedding space is named by `embedding_model` (PERSON -> a body re-id model, FACE -> a face
+  // model); its length is the model's and is not fixed by this contract. Present on
   // every frame of a live track (so a bounded drop-oldest queue can never leave a track with no
   // vector), but only actually recomputed on track START and once per ANALYTICS_REID_EMBED_INTERVAL_SEC
   // thereafter — the carried-along frames repeat the last computed vector. Empty when no embedder
@@ -124,6 +125,13 @@ message DetectionEvent {
   // interval between the two stamps is what the detector costs. Without this field that cost is
   // indistinguishable from slow delivery, and both were being blamed for the other.
   google.protobuf.Timestamp emitted_at = 13;
+  // Which model produced `embedding`, set whenever it is. Two embeddings are comparable only when
+  // this is equal: different models give vectors of different spaces, and sometimes of the same
+  // length (Open Model Zoo's person-reidentification-retail-0277 and -0288 are both 256-d), so the
+  // length alone does not tell them apart. The model's own name where its file records one (e.g.
+  // "person-reidentification-retail-0277"), else its file name and a hash of its contents. Empty
+  // from a worker that predates this field.
+  string embedding_model = 14;
 }
 
 message EmbedImageRequest {
@@ -138,6 +146,8 @@ message EmbedImageResponse {
   string message = 2;
   repeated float embedding = 3;
   optional BoundingBox bbox = 4;
+  // As DetectionEvent.embedding_model: the space `embedding` belongs to.
+  string embedding_model = 5;
 }
 
 message EstimateGlobalMotionRequest {
