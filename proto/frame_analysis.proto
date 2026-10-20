@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+// Offline analysis of a video file: every decoded frame, with the objects found in it.
+//
+// A separate contract from analytics.proto on purpose. AnalyticsService is the live-watch API
+// that ta_vms depends on; this one serves batch consumers (ROI re-encoding, benches, review
+// tools) that need what a watch never gives out -- the decoded pictures themselves and a frame
+// index on every detection. Neither knows about any particular encoder: frames leave as plain
+// YUV420P and what is done with them is the caller's business.
+//
+// Canonical copy lives in video_a/proto. Consumers vendor it; keep the copies in sync.
+package frame_analysis.v1;
+
+service FrameAnalysis {
+  // One pass over a file the worker can read. The stream opens with a StreamHeader, carries one
+  // AnalyzedFrame per decoded frame in decode output order, and ends with a Summary. Cancelling
+  // the call stops the pass at the next frame.
+  //
+  // RESOURCE_EXHAUSTED when the worker is already running as many passes as it is allowed
+  // (ANALYTICS_MAX_FILE_JOBS); NOT_FOUND when the file cannot be opened.
+  rpc AnalyzeFile(AnalyzeFileRequest) returns (stream AnalyzeFileEvent);
+}
+
+enum ObjectKind {
+  OBJECT_KIND_UNSPECIFIED = 0;
+  OBJECT_KIND_PERSON = 1;
+  OBJECT_KIND_FACE = 2;
+  // Car, motorcycle, bus and truck, collapsed into one class by the detector.
+  OBJECT_KIND_VEHICLE = 3;
+  OBJECT_KIND_LICENSE_PLATE = 4;
+}
+
+message AnalyzeFileRequest {
+  // Absolute path on the worker's filesystem.
+  string file_path = 1;
+  // Empty means all kinds.
+  repeated ObjectKind classes = 2;
+  // Detector threshold; 0 picks the worker's default (0.5).
+  float min_confidence = 3;
+  // Detection passes per second of content: 0 every frame, negative never (frames only).
+  // Objects between passes are carried forward from the last one, marked detected=false.
+  double detect_fps = 4;
+  // Attach the YUV420P picture to every AnalyzedFrame.
+  bool include_frames = 5;
+  // Attach SceneStats to every AnalyzedFrame.
+  bool include_scene_stats = 6;
+  // Motion gate threshold for this pass; unset keeps the worker's ANALYTICS_MOTION_GATE_THRESHOLD,
+  // negative turns the gate off. A gated detection pass emits no objects.
+  optional float motion_gate_threshold = 7;
+  // Stop after this many frames; 0 reads to the end.
+  uint32 max_frames = 8;
+}
+
+message StreamHeader {
+  int32 width = 1;
+  int32 height = 2;
+  int32 fps_num = 3;
+  int32 fps_den = 4;
+  // Of AnalyzedFrame.pts.
+  int32 time_base_num = 5;
+  int32 time_base_den = 6;
+  // Always "yuv420p": tightly packed Y (w*h), U and V ((w+1)/2 * (h+1)/2 each), 8-bit.
+  string pix_fmt = 7;
+  // Source codec name as FFmpeg spells it (h264, hevc, ...).
+  string codec = 8;
+  // Container duration; 0 when unknown.
+  double duration_sec = 9;
+  // From the container; 0 when unknown. A progress hint, not a promise.
+  int64 frame_count_estimate = 10;
+  // Source bitrate from the container, bits/s; 0 when unknown.
+  int64 bit_rate = 11;
+}
+
+message BoundingBox {
+  // Normalized 0..1 from the top-left corner of the full frame.
+  float x = 1;
+  float y = 2;
+  float width = 3;
+  float height = 4;
+}
+
+message DetectedObject {
+  // Stable for a person/vehicle while the tracker keeps it; face and plate carry the id of the
+  // person/vehicle they were found on, 0 when unassociated.
+  int64 track_id = 1;
+  ObjectKind kind = 2;
+  float confidence = 3;
+  BoundingBox bbox = 4;
+}
+
+message SceneStats {
+  // 0..255.
+  float mean_luma = 1;
+  // ITU-T P.910 SI / TI on a subsampled luma grid.
+  float spatial_info = 2;
+  float temporal_info = 3;
+  // Global scene shift since the previous frame, normalized; only meaningful with confidence > 0.
+  float motion_dx = 4;
+  float motion_dy = 5;
+  float motion_confidence = 6;
+}
+
+message AnalyzedFrame {
+  // 0-based, decode output order.
+  int64 index = 1;
+  // In the header's time base; never goes backwards.
+  int64 pts = 2;
+  double t_sec = 3;
+  // Detection ran on this frame; otherwise `objects` are carried from the last pass.
+  bool detected = 4;
+  repeated DetectedObject objects = 5;
+  // Present with include_frames.
+  bytes yuv420p = 6;
+  // Present with include_scene_stats.
+  SceneStats stats = 7;
+}
+
+message Summary {
+  int64 frames = 1;
+  int64 detect_passes = 2;
+  int64 gated_frames = 3;
+  double elapsed_sec = 4;
+}
+
+message AnalyzeFileEvent {
+  oneof event {
+    StreamHeader header = 1;
+    AnalyzedFrame frame = 2;
+    Summary summary = 3;
+  }
+}

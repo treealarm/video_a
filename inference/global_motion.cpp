@@ -121,6 +121,38 @@ std::vector<float> grayscale_motion_grid(const decoded_frame& frame)
   return grid;
 }
 
+std::vector<float> luma_motion_grid(const uint8_t* luma, int stride, int width, int height)
+{
+  if (!luma || width <= 0 || height <= 0 || stride < width)
+    return {};
+
+  std::vector<float> grid(static_cast<size_t>(k_motion_grid_w * k_motion_grid_h), 0.f);
+  for (int gy = 0; gy < k_motion_grid_h; ++gy)
+  {
+    const int y_from = (gy * height) / k_motion_grid_h;
+    const int y_to = std::max(y_from + 1, ((gy + 1) * height) / k_motion_grid_h);
+    for (int gx = 0; gx < k_motion_grid_w; ++gx)
+    {
+      const int x_from = (gx * width) / k_motion_grid_w;
+      const int x_to = std::max(x_from + 1, ((gx + 1) * width) / k_motion_grid_w);
+
+      uint32_t sum = 0;
+      int count = 0;
+      for (int y = y_from; y < std::min(y_to, height); ++y)
+      {
+        const uint8_t* px = luma + static_cast<size_t>(y) * static_cast<size_t>(stride);
+        for (int x = x_from; x < std::min(x_to, width); ++x)
+          sum += px[x];
+        count += std::min(x_to, width) - x_from;
+      }
+      if (count > 0)
+        grid[static_cast<size_t>(gy * k_motion_grid_w + gx)] =
+          static_cast<float>(sum) / static_cast<float>(count);
+    }
+  }
+  return grid;
+}
+
 std::optional<global_motion_result> estimate_global_motion(
   const std::vector<float>& before_grid,
   const std::vector<float>& after_grid)

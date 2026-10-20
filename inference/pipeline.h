@@ -3,6 +3,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -27,6 +28,11 @@ struct pipeline_config {
   // the first frame a track is seen (START) and then at most once per interval; the most recent
   // vector is attached to every emitted detection of the track regardless.
   int reid_embed_interval_sec = 15;
+  // Motion-gate threshold for this pipeline only. Unset keeps the process-wide
+  // ANALYTICS_MOTION_GATE_THRESHOLD; a negative value turns the gate off. For callers that know
+  // their footage better than the deployment does -- an offline pass over a handheld clip wants
+  // its boxes through the pan, a fixed camera on a pole wants the gate.
+  std::optional<float> motion_gate_threshold;
 };
 
 // Orchestrates the 4 inference stages on every sampled (keyframe-decoded) frame — see project

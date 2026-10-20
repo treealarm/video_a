@@ -48,6 +48,8 @@ Requires these environment variables (see `.env`):
   recomputes its body re-id embedding. The embedding is computed on the track's first frame and
   re-sent with every detection of that track; this only bounds how often it is *recomputed*. Not
   optional — a missing, non-numeric or out-of-range value is a startup failure (`exit(1)`).
+- `ANALYTICS_MAX_FILE_JOBS` — optional, default `1`. How many `FrameAnalysis.AnalyzeFile` passes
+  may run at once (each loads its own models); one more is refused with `RESOURCE_EXHAUSTED`.
 - `ANALYTICS_STUB_SYNTHETIC_DETECTIONS` — optional, dev/test-only. When `true`, periodically emits
   one synthetic `PERSON` detection so the whole pipeline (RTSP → decode → tracker → gRPC stream)
   is exercisable end-to-end without real models.
@@ -59,6 +61,27 @@ timestamps and looped, so everything downstream — the sampler's keyframe-inter
 of all — sees the shape of input it sees from a camera, and a short clip stands in for a
 continuous source. Everything else about the watch is unchanged: same classes, same
 `sample_fps`, same `StreamDetections`.
+
+## Offline analysis over gRPC (`FrameAnalysis`)
+
+`proto/frame_analysis.proto` (package `frame_analysis.v1`) is served on the same port as
+`AnalyticsService`. It is a separate contract on purpose: the live-watch API ta_vms depends on is
+untouched, and batch consumers get what a watch never hands out — the decoded pictures and a frame
+index on every detection.
+
+`AnalyzeFile(file_path, classes, detect_fps, include_frames, include_scene_stats, …)` streams one
+`StreamHeader`, then one `AnalyzedFrame` per decoded frame in decode order, then a `Summary`:
+
+- `objects` are the regions in force on that frame (`detected` tells a detection pass from a carried
+  frame), normalized boxes with `track_id`, `kind` and `confidence` — the same boxes the `--roi-file`
+  sidecar records, from the same code (`roi/file_analyzer.*`);
+- `yuv420p` (with `include_frames`) is the picture, tightly packed 8-bit 4:2:0;
+- `stats` (with `include_scene_stats`) is mean luma, P.910 SI/TI and the global motion estimate.
+
+`detect_fps` < 0 skips detection entirely (frames only); `motion_gate_threshold` overrides
+`ANALYTICS_MOTION_GATE_THRESHOLD` for the pass, negative turns the gate off. Cancelling the call
+stops the pass at the next frame. Nothing here knows about any encoder: roi_web_recode is one
+consumer (it feeds the frames to smart-video-encoder).
 
 ## Offline ROI pass (`--roi-file`)
 
