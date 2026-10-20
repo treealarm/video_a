@@ -70,6 +70,10 @@ struct file_analyzer_config {
   /// runs it (frames only).
   double detect_fps = 2.0;
   bool scene_stats = false;
+  /// Detect on the picture turned the way the file's display matrix says to show it (a phone
+  /// held sideways or upside down), and give the boxes back in the stored picture's coordinates.
+  /// The frames themselves always stay as stored.
+  bool upright = false;
 };
 
 class file_analyzer final : public media_sink {
@@ -123,6 +127,10 @@ private:
   codec_ptr m_decoder;
   AVRational m_time_base{ 1, 1000 };
   AVRational m_frame_rate{ 25, 1 };
+
+  // Clockwise degrees a player turns the stored picture by: 0, 90, 180 or 270. Detection uses it
+  // only with `upright`.
+  int m_rotation = 0;
 
   sws_ptr m_bgr_ctx;
   int m_bgr_width = 0;
